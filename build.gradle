@@ -1,0 +1,126 @@
+buildscript {
+    repositories {
+        jcenter()
+        mavenCentral()
+        maven {
+            name = "forge"
+            url = "http://files.minecraftforge.net/maven"
+        }
+        maven {
+            name = "sponge"
+            url = "https://repo.spongepowered.org/maven"
+        }
+    }
+    dependencies {
+        classpath 'net.minecraftforge.gradle:ForgeGradle:2.1-SNAPSHOT'
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle.forge'
+
+version = "1.5"
+group = "com.nezurstandalone"
+archivesBaseName = "Nezur-AutoContractor-Grinder"
+targetCompatibility = "1.8"
+sourceCompatibility = "1.8"
+compileJava.options.encoding = "UTF-8"
+compileJava.options.compilerArgs += [
+    "-AoutRefMapFile=${buildDir}/mixins.nezur_acg.refmap.json"
+]
+
+minecraft {
+    version = "1.8.9-11.15.1.2318-1.8.9"
+    runDir = "run"
+    mappings = "stable_22"
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java']
+        }
+        resources {
+            srcDirs = ['src/main/resources']
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = "sponge"
+        url = "https://repo.spongepowered.org/maven"
+    }
+    maven {
+        name = "jitpack"
+        url = "https://jitpack.io"
+    }
+}
+
+configurations {
+    embed
+    compile.extendsFrom(embed)
+}
+
+dependencies {
+    embed 'org.spongepowered:mixin:0.7.11-SNAPSHOT'
+    compileOnly 'org.spongepowered:spongeapi:4.1.0'
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "mcversion", project.minecraft.version
+
+    from(sourceSets.main.resources.srcDirs) {
+        include 'mcmod.info'
+        expand 'version': project.version, 'mcversion': project.minecraft.version
+    }
+
+    from(sourceSets.main.resources.srcDirs) {
+        exclude 'mcmod.info'
+    }
+}
+
+jar {
+    exclude "META-INF/*.SF", "META-INF/*.RSA", "META-INF/*.DSA"
+    from {
+        configurations.embed.collect { zipTree(it) }
+    }
+    manifest {
+        attributes(
+                'FMLCorePlugin': 'com.nezurstandalone.loader.NezurMixinLoader',
+                'FMLCorePluginContainsFMLMod': 'true',
+                'ForceLoadAsMod': 'true',
+                'MixinConfigs': 'mixins.nezur_acg.json'
+        )
+    }
+}
+
+
+if (tasks.findByName('sourceJar')) sourceJar.enabled = false
+
+task auditClasspath {
+    doLast { file('tools/runtime-classpath.txt').text = sourceSets.main.runtimeClasspath.asPath }
+}
+
+// Executes real retained constructors/layout/config and pure contract regression tests.
+task compilePortChecks(type: JavaCompile) {
+    dependsOn classes
+    source files('tools/InitializationProbe.java', 'tools/ContractParityProbe.java')
+    classpath = sourceSets.main.runtimeClasspath + files(compileJava.destinationDir)
+    destinationDir = file("$buildDir/port-checks")
+    sourceCompatibility = '1.8'
+    targetCompatibility = '1.8'
+    options.encoding = 'UTF-8'
+    options.compilerArgs = ['-proc:none']
+}
+task verifyStandalone {
+    dependsOn build, compilePortChecks
+    doLast {
+        def sandbox = file("$buildDir/verification-sandbox")
+        sandbox.mkdirs()
+        def cp = files(compilePortChecks.destinationDir, compileJava.destinationDir) + sourceSets.main.runtimeClasspath
+        javaexec { classpath = cp; main = 'InitializationProbe'; workingDir = sandbox }
+        javaexec { classpath = cp; main = 'ContractParityProbe'; args 'strict'; workingDir = sandbox }
+    }
+}

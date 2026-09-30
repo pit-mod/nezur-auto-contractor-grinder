@@ -1,0 +1,16 @@
+[
+{
+  "modid": "nezur_acg",
+  "name": "Nezur Auto Contractor + Grinder",
+  "description": "Standalone Nezur AutoGrinder and AutoContractor ecosystem with original GUI and support systems.",
+  "version": "${version}",
+  "mcversion": "1.8.9",
+  "url": "",
+  "updateUrl": "",
+  "authorList": [],
+  "credits": "",
+  "logoFile": "",
+  "screenshots": [],
+  "dependencies": []
+}
+]

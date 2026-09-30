@@ -1,0 +1,16 @@
+{
+  "package": "com.nezurstandalone.mixin",
+  "minVersion": "0.7",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "gui.MixinGuiIngame",
+    "gui.MixinScorePlayerTeam",
+    "client.MixinNetHandlerPlayClient",
+    "client.MixinMinecraftInput",
+    "client.MixinWorldRevision"
+  ],
+  "required": true,
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

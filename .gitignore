@@ -1,0 +1,21 @@
+# Generated files and private local state
+.gradle/
+build/
+bin/
+out/
+run/
+config/
+nezur-acg/
+verification/
+.publish/
+*.log
+.env
+.env.*
+auth.json
+api.json
+tools/runtime-classpath.txt
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
