@@ -9,9 +9,13 @@
 
 A standalone **Minecraft Forge 1.8.9** mod with AutoContractor and AutoGrinder. **No KeyAuth, license key, paid login or HWID restriction.**
 
+## Startup crash hotfix — 1.5.1
+
+If 1.5 crashes with `IMixinService` missing, **replace the old JAR with 1.5.1**. No extra Mixin/bootstrap mod is needed.
+
 ## Download and install
 
-1. Download **Nezur-AutoContractor-Grinder-1.5.jar** from [Releases](https://github.com/pit-mod/nezur-auto-contractor-grinder/releases/latest).
+1. Download **Nezur-AutoContractor-Grinder-1.5.1.jar** from [Releases](https://github.com/pit-mod/nezur-auto-contractor-grinder/releases/latest).
 2. Install Minecraft **Forge 1.8.9**.
 3. Put the JAR in the Minecraft instance's `mods` folder. Remove older standalone copies, then restart Minecraft.
 4. Press **Right Shift** to open the module menu.
@@ -49,11 +53,11 @@ Linux/macOS:
 ./gradlew clean build verifyStandalone
 ```
 
-The build uses Gradle 4.4.1 and ForgeGradle 2.1. Output: `build/libs/Nezur-AutoContractor-Grinder-1.5.jar`. Mixin is bundled; the original Nezur source checkout is not required.
+The build uses Gradle 4.4.1 and ForgeGradle 2.1. Output: `build/libs/Nezur-AutoContractor-Grinder-1.5.1.jar`. Mixin is bundled; the original Nezur source checkout is not required.
 
 ## Verification
 
-Compilation, retained module initialization, headless GUI/config checks and contract regression tests passed. These checks do not prove live server behavior or anti-cheat safety.
+Compilation, retained module initialization, headless GUI/config checks, contract regressions and isolated bundled-Mixin startup checks passed. The 1.5.1 hotfix was also checked through the production Forge 1.8.9 startup pipeline with only Nezur in mods; all five Mixin target classes loaded and the Minecraft input hook was confirmed applied. The smoke test stops before starting the graphical client and does not prove live gameplay or anti-cheat safety.
 
 ## Premium Nezur
 

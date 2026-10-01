@@ -52,11 +52,37 @@ public class NezurMixinLoader implements IFMLLoadingPlugin {
     @Override
     public void injectData(Map<String, Object> data) {
         try {
+            prepareBundledMixin();
             org.spongepowered.asm.launch.MixinBootstrap.init();
             org.spongepowered.asm.mixin.Mixins.addConfiguration("mixins.nezur_acg.json");
         } catch (Throwable failure) {
             throw new IllegalStateException("Nezur mandatory initialization failed; automation must not start", failure);
         }
+    }
+
+    /** Mixin's service packages delegate to the LaunchWrapper parent, not its mod URLs. */
+    private static void prepareBundledMixin() throws Exception {
+        ClassLoader parent = net.minecraft.launchwrapper.Launch.class.getClassLoader();
+        if (!(parent instanceof java.net.URLClassLoader)) {
+            throw new IllegalStateException("Nezur requires the Java 8 LaunchWrapper classloader");
+        }
+        java.net.URL source = NezurMixinLoader.class.getProtectionDomain().getCodeSource().getLocation();
+        if ("jar".equals(source.getProtocol())) {
+            source = ((java.net.JarURLConnection) source.openConnection()).getJarFileURL();
+        }
+        java.net.URLClassLoader urls = (java.net.URLClassLoader) parent;
+        boolean present = false;
+        for (java.net.URL url : urls.getURLs()) {
+            if (url.equals(source)) { present = true; break; }
+        }
+        if (!present) {
+            java.lang.reflect.Method addUrl = java.net.URLClassLoader.class.getDeclaredMethod("addURL", java.net.URL.class);
+            addUrl.setAccessible(true);
+            addUrl.invoke(urls, source);
+        }
+        // Establish a single parent-loaded Mixin implementation before touching its bootstrap.
+        net.minecraft.launchwrapper.Launch.classLoader.addClassLoaderExclusion("org.spongepowered.asm.");
+        Class.forName("org.spongepowered.asm.service.IMixinService", false, parent);
     }
 
     @Override

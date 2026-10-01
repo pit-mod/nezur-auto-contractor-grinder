@@ -18,7 +18,7 @@ buildscript {
 
 apply plugin: 'net.minecraftforge.gradle.forge'
 
-version = "1.5"
+version = "1.5.1"
 group = "com.nezurstandalone"
 archivesBaseName = "Nezur-AutoContractor-Grinder"
 targetCompatibility = "1.8"
@@ -106,7 +106,7 @@ task auditClasspath {
 // Executes real retained constructors/layout/config and pure contract regression tests.
 task compilePortChecks(type: JavaCompile) {
     dependsOn classes
-    source files('tools/InitializationProbe.java', 'tools/ContractParityProbe.java')
+    source files('tools/InitializationProbe.java', 'tools/ContractParityProbe.java', 'tools/IsolatedMixinProbe.java')
     classpath = sourceSets.main.runtimeClasspath + files(compileJava.destinationDir)
     destinationDir = file("$buildDir/port-checks")
     sourceCompatibility = '1.8'
@@ -122,5 +122,10 @@ task verifyStandalone {
         def cp = files(compilePortChecks.destinationDir, compileJava.destinationDir) + sourceSets.main.runtimeClasspath
         javaexec { classpath = cp; main = 'InitializationProbe'; workingDir = sandbox }
         javaexec { classpath = cp; main = 'ContractParityProbe'; args 'strict'; workingDir = sandbox }
+        // Nezur exists ONLY in the child mod loader; no external Mixin on the parent classpath.
+        def vanillaCp = files(compilePortChecks.destinationDir) + sourceSets.main.runtimeClasspath.filter {
+            it.isFile() && !it.absolutePath.contains('org.spongepowered')
+        }
+        javaexec { classpath = vanillaCp; main = 'IsolatedMixinProbe'; args jar.archivePath.absolutePath; workingDir = sandbox }
     }
 }
