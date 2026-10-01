@@ -1719,6 +1719,7 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     // ---- lobby swap / reconnect --------------------------------------------
     private boolean shouldLobbySwap() {
+        if(com.nezurstandalone.contract.GoldPickupRecovery.ignoresPopulation(com.nezurstandalone.contract.ContractCombatPolicy.type()))return false;
         // Classic has no verified Hypixel lobby/rejoin command contract. Stay and grind.
         if (isClassicPitTitle(Utils.getScoreboardTitle())) return false;
         // Night-quest hold: never swap while a quest runs; near quest time, only stay in a full mid.
@@ -1758,6 +1759,9 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private void handleLobbySwapInPit() {
+        if (com.nezurstandalone.contract.GoldPickupRecovery.ignoresPopulation(com.nezurstandalone.contract.ContractCombatPolicy.type())) {
+            currentState = State.IDLE; lobbyFirstCommand = false; squadSwapForced = false; return;
+        }
         if (isClassicPitTitle(Utils.getScoreboardTitle())) { currentState = State.IDLE; return; }
         if (!squadSwapForced && !shouldLobbySwap()) { currentState = State.IDLE; lobbyFirstCommand = false; return; }
         long delay = lobbyFirstCommand ? 5000L : 1000L;

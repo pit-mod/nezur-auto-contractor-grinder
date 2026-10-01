@@ -92,7 +92,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private final BooleanSetting buyDiamondSword=new BooleanSetting("Buy Contract Diamond Sword",true);
     private final NumberSetting sneakRadius=new NumberSetting("Sneak Safety Radius",3.5,1,3.5,1);
     private final NumberSetting sneakDelay=new NumberSetting("Sneak Before Hit (ms)",100,0,500,0);
-    private final NumberSetting goldScanRadius=new NumberSetting("Gold Scan Radius",32,8,64,0);
+    private final NumberSetting goldScanRadius=new NumberSetting("Gold Scan Radius",com.nezurstandalone.contract.GoldPickupRecovery.DEFAULT_SCAN_RADIUS,8,com.nezurstandalone.contract.GoldPickupRecovery.MAX_SCAN_RADIUS,0);
     private final NumberSetting goldRescan=new NumberSetting("Gold Rescan (ms)",750,250,3000,0);
     private final NumberSetting minimumGold=new NumberSetting("Minimum Visible Gold",2,1,20,0);
     private final NumberSetting lowGoldTimeout=new NumberSetting("Low Gold Timeout (s)",45,10,180,0);
@@ -1598,6 +1598,9 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private boolean completedSidebarSuppressed;
     private net.minecraft.entity.item.EntityItem goldTarget;
     private int lastGoldProgress=-1;
+    private final com.nezurstandalone.contract.GoldPickupRecovery goldPickupRecovery=new com.nezurstandalone.contract.GoldPickupRecovery();
+    private final java.util.Map<Integer,Long> blockedGoldTargets=new java.util.HashMap<Integer,Long>();
+
     private boolean liveGold(net.minecraft.entity.item.EntityItem item){
         return item!=null && !item.isDead && mc.theWorld.loadedEntityList.contains(item)
                 && item.getEntityItem()!=null && item.getEntityItem().getItem()==net.minecraft.init.Items.gold_ingot;
@@ -1609,11 +1612,12 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         }
         // Despawn/pickup is only navigation evidence, never contract progress.
         if(goldTarget!=null && !liveGold(goldTarget)){
-            goldTarget=null;PathfinderManager.clear(this,true);
+            goldTarget=null;goldPickupRecovery.reset();PathfinderManager.clear(this,true);
             com.nezurstandalone.control.MovementKeys.release("contractor-gold");nextAction=0;
         }
         if(Utils.isInSpawn()) {lowGoldSince=0;startGrinder();return;} // Existing grinder handles the spawn exit.
         stopGrinder();
+        blockedGoldTargets.entrySet().removeIf(entry -> now>=entry.getValue());
         net.minecraft.entity.item.EntityItem best=null;
         double bestScore=-Double.MAX_VALUE;
         int visible=0;
@@ -1622,6 +1626,8 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             net.minecraft.entity.item.EntityItem drop=(net.minecraft.entity.item.EntityItem)entity;
             ItemStack stack=drop.getEntityItem();
             if(!liveGold(drop))continue;
+            Long retryAt=blockedGoldTargets.get(drop.getEntityId());
+            if(retryAt!=null && now<retryAt)continue;
             double distance=mc.thePlayer.getDistanceToEntity(drop);
             if(distance>goldScanRadius.value)continue;
             visible++;
@@ -1637,19 +1643,37 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             double score=cluster*3-distance-danger*2;
             if(score>bestScore){bestScore=score;best=drop;}
         }
-        if(goldTarget==null){goldTarget=best;nextAction=0;}
+        if(goldTarget==null){goldTarget=best;goldPickupRecovery.reset();nextAction=0;}
         if(goldTarget!=null){
             double distance=mc.thePlayer.getDistanceToEntity(goldTarget);
             if(distance<=2.0 || (PathfinderManager.getState()==PathfinderManager.State.COMPLETED && distance<=4.0)){
                 if(PathfinderManager.isPathing())PathfinderManager.clear(this,true);
-                if(mc.currentScreen==null && !com.nezurstandalone.input.NativeActionGate.manual()){
+                if(mc.currentScreen==null && !mc.thePlayer.isUsingItem() && !com.nezurstandalone.input.NativeActionGate.manual()){
                     float[] rot=RotationUtils.getRotations(goldTarget,0,0,0);
                     RotationManager.getInstance().setTargetRotation(rotationOwner,RotationManager.PRIORITY_COMBAT,rot[0],rot[1],12,true);
                     boolean aligned=Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(rot[0]-mc.thePlayer.rotationYaw))<25;
-                    com.nezurstandalone.control.MovementKeys.set("contractor-gold",mc.gameSettings.keyBindForward.getKeyCode(),aligned);
-                } else com.nezurstandalone.control.MovementKeys.release("contractor-gold");
+                    com.nezurstandalone.contract.GoldPickupRecovery.Action recovery=goldPickupRecovery.update(now,
+                            goldTarget.getEntityId(),aligned,mc.thePlayer.onGround,
+                            mc.thePlayer.posX,mc.thePlayer.posZ,distance);
+                    if(recovery==com.nezurstandalone.contract.GoldPickupRecovery.Action.REPATH){
+                        blockedGoldTargets.put(goldTarget.getEntityId(),now+8000);
+                        goldTarget=null;PathfinderManager.clear(this,true);
+                        com.nezurstandalone.control.MovementKeys.release("contractor-gold");nextAction=0;
+                        log("Gold pickup remained blocked after two recovery attempts; rescanning another drop.");
+                    } else {
+                        boolean recovering=recovery!=com.nezurstandalone.contract.GoldPickupRecovery.Action.NONE;
+                        if(recovering && now==goldPickupRecovery.recoveryStartedAt()){
+                            stuckWatch.reset();log("Gold pickup stuck; brief sidestep/jump recovery.");
+                        }
+                        com.nezurstandalone.control.MovementKeys.set("contractor-gold",mc.gameSettings.keyBindForward.getKeyCode(),aligned && !recovering);
+                        com.nezurstandalone.control.MovementKeys.set("contractor-gold",mc.gameSettings.keyBindLeft.getKeyCode(),recovery==com.nezurstandalone.contract.GoldPickupRecovery.Action.SIDESTEP_LEFT);
+                        com.nezurstandalone.control.MovementKeys.set("contractor-gold",mc.gameSettings.keyBindRight.getKeyCode(),recovery==com.nezurstandalone.contract.GoldPickupRecovery.Action.SIDESTEP_RIGHT);
+                        com.nezurstandalone.control.MovementKeys.set("contractor-gold",mc.gameSettings.keyBindJump.getKeyCode(),recovering
+                                && mc.thePlayer.onGround && now-goldPickupRecovery.recoveryStartedAt()<100);
+                    }
+                } else {goldPickupRecovery.reset();com.nezurstandalone.control.MovementKeys.release("contractor-gold");}
             } else {
-                com.nezurstandalone.control.MovementKeys.release("contractor-gold");
+                goldPickupRecovery.reset();com.nezurstandalone.control.MovementKeys.release("contractor-gold");
                 if(now>=nextAction){PathfinderManager.walkTo(this,goldTarget.posX,goldTarget.posY,goldTarget.posZ,true);nextAction=now+(long)goldRescan.value;}
             }
         } else {PathfinderManager.clear(this,true);com.nezurstandalone.control.MovementKeys.release("contractor-gold");}
@@ -1716,14 +1740,16 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                             && mc.getNetHandler()!=null && mc.getNetHandler().getPlayerInfo(player.getUniqueID())!=null
                             && "Pit".equals(com.nezurstandalone.utils.PitMapManager.getZone(player.posX,player.posY,player.posZ)))networkMidCount++;
             }
-            if(networkMidCount<((scoreboard!=null && scoreboard.active && isExecutable(scoreboard.type)
+            boolean goldObjective=scoreboard!=null && scoreboard.active
+                    && com.nezurstandalone.contract.GoldPickupRecovery.ignoresPopulation(scoreboard.type);
+            if(!goldObjective && networkMidCount<((scoreboard!=null && scoreboard.active && isExecutable(scoreboard.type)
                     && scoreboard.type!=ContractOffer.Type.COLLECT_GOLD_INGOTS)?3:(int)minMidPlayers.value)){if(thinLobbySince==0)thinLobbySince=now;}
             else thinLobbySince=0;
             AutoGrinder g=grinder();
             boolean lease=g!=null && g.hasTemporaryPerkLease();
             boolean swapState=state==State.FINDING_CONTRACTOR || state==State.CHECKING_SCOREBOARD
                     || (state==State.EXECUTING_CONTRACT && (g==null || !g.isToggled()));
-            if(!gappleActive && lobbySwap.enabled && swapState && !lease && mc.currentScreen==null
+            if(!gappleActive && !goldObjective && lobbySwap.enabled && swapState && !lease && mc.currentScreen==null
                     && thinLobbySince>0 && now-thinLobbySince>=10000)connection.requestSwap(now);
             if(!connection.swapping())return false;
             move(State.LOBBY_SWITCHING);
@@ -1778,7 +1804,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         com.nezurstandalone.control.GuiLease.release(this);
     }
     private void cleanupNavigation() {
-        goldTarget=null;lastGoldProgress=-1;
+        goldTarget=null;lastGoldProgress=-1;goldPickupRecovery.reset();blockedGoldTargets.clear();
         com.nezurstandalone.control.MovementKeys.release("contractor-gold");
         com.nezurstandalone.control.MovementKeys.release("contractor-approach");
         com.nezurstandalone.control.MovementKeys.release("contractor-gapple");
