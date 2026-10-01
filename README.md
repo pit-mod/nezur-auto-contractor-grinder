@@ -7,11 +7,11 @@
 
 # Nezur AutoContractor + AutoGrinder — Free
 
-A standalone **Minecraft Forge 1.8.9** mod with AutoContractor and AutoGrinder. **No KeyAuth, license key, paid login or HWID restriction.**
+A standalone **Minecraft Forge 1.8.9** mod with AutoContractor and AutoGrinder.
 
 ## Startup crash hotfix — 1.5.1
 
-If 1.5 crashes with `IMixinService` missing, **replace the old JAR with 1.5.1**. No extra Mixin/bootstrap mod is needed.
+If 1.5 crashes with `IMixinService` missing, **replace the old JAR with 1.5.1**.
 
 ## Download and install
 
