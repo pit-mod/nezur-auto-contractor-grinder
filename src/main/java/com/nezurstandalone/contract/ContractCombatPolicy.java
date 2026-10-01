@@ -14,6 +14,8 @@ public final class ContractCombatPolicy {
     private static ContractOffer.Type type;
     private static Object world;
     private static long sneakSince;
+    private static int sneakStartTick = -1;
+    private static EntityPlayer sneakTarget;
     private static long sneakDelayMs = 100;
     private static double sneakRadius = 3.5;
 
@@ -36,6 +38,8 @@ public final class ContractCombatPolicy {
         type = null;
         world = null;
         sneakSince = 0;
+        sneakStartTick = -1;
+        sneakTarget = null;
     }
 
     public static ContractOffer.Type type() {
@@ -60,11 +64,10 @@ public final class ContractCombatPolicy {
     public static void updateSneak() {
         if (type != ContractOffer.Type.SNEAK_ATTACK_KILLS) return;
         Minecraft mc = Minecraft.getMinecraft();
-        MovingObjectPosition hit = mc.objectMouseOver;
-        if (!sneakHitReady(hit == null ? null : hit.entityHit)) releaseSneak();
+        if (!sneakTargetReady(sneakTarget)) releaseSneak();
     }
 
-    private static boolean sneakHitReady(Entity intended) {
+    private static boolean sneakTargetReady(Entity intended) {
         Minecraft mc = Minecraft.getMinecraft();
         MovingObjectPosition hit = mc.objectMouseOver;
         return mc.theWorld != null && mc.theWorld == world && mc.thePlayer != null
@@ -75,7 +78,13 @@ public final class ContractCombatPolicy {
                 && ((EntityPlayer) intended).getHealth() > 0
                 && mc.thePlayer.getDistanceToEntity(intended) <= sneakRadius
                 && "Pit".equals(com.nezurstandalone.utils.PitMapManager.getZone(
-                        mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ))
+                        mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ));
+    }
+
+    private static boolean sneakHitReady(Entity intended) {
+        Minecraft mc = Minecraft.getMinecraft();
+        MovingObjectPosition hit = mc.objectMouseOver;
+        return sneakTargetReady(intended)
                 && hit != null && hit.typeOfHit == MovingObjectPosition.MovingObjectType.ENTITY
                 && hit.entityHit == intended && hit.hitVec != null
                 && mc.thePlayer.getPositionEyes(1.0F).distanceTo(hit.hitVec) <= sneakRadius;
@@ -116,10 +125,11 @@ public final class ContractCombatPolicy {
                 if (sneakSince == 0) {
                     KeyBinding.setKeyBindState(mc.gameSettings.keyBindSneak.getKeyCode(), true);
                     sneakSince = com.nezurstandalone.control.Clock.millis();
+                    sneakStartTick = mc.thePlayer.ticksExisted;
+                    sneakTarget = (EntityPlayer) intended;
                     return false;
                 }
-                return mc.thePlayer.isSneaking()
-                        && com.nezurstandalone.control.Clock.millis() - sneakSince >= sneakDelayMs;
+                return sneakClickReady();
             default:
                 return true;
         }
@@ -137,9 +147,14 @@ public final class ContractCombatPolicy {
             return g!=null && g.isTemporaryNoPerkReady();
         }
         if (type == ContractOffer.Type.SNEAK_ATTACK_KILLS) {
+            updateSneak();
             Minecraft mc = Minecraft.getMinecraft();
-            MovingObjectPosition hit = mc.objectMouseOver;
-            return allowsAttack(hit == null ? null : hit.entityHit);
+            if (sneakStartTick < 0) {
+                MovingObjectPosition hit = mc.objectMouseOver;
+                allowsAttack(hit == null ? null : hit.entityHit);
+            }
+            // Maintain the native click cadence after three client ticks, not only on crosshair hits.
+            return sneakClickReady();
         }
         Minecraft client=Minecraft.getMinecraft();
         if(type==ContractOffer.Type.NO_ARMOR_KILLS && client.thePlayer!=null){
@@ -152,6 +167,13 @@ public final class ContractCombatPolicy {
         if(type==ContractOffer.Type.FIST_MID_KILLS && client.thePlayer!=null)return client.thePlayer.getHeldItem()==null;
         MovingObjectPosition hit = Minecraft.getMinecraft().objectMouseOver;
         return hit != null && hit.entityHit != null && allowsAttack(hit.entityHit);
+    }
+
+    private static boolean sneakClickReady() {
+        Minecraft mc = Minecraft.getMinecraft();
+        return sneakTargetReady(sneakTarget) && mc.thePlayer.isSneaking()
+                && sneakStartTick >= 0 && mc.thePlayer.ticksExisted - sneakStartTick >= 3
+                && com.nezurstandalone.control.Clock.millis() - sneakSince >= sneakDelayMs;
     }
 
     public static void noTarget() {
@@ -174,6 +196,8 @@ public final class ContractCombatPolicy {
             KeyBinding.setKeyBindState(key, com.nezurstandalone.input.NativeActionGate.physical(key));
         }
         sneakSince = 0;
+        sneakStartTick = -1;
+        sneakTarget = null;
     }
 
     private static boolean hasBountyMarker(EntityPlayer player) {
