@@ -89,13 +89,13 @@ public class GrinderEngine extends Module implements DraggableHud {
             .pauseChance(0.0).emitter(() -> GuardedInput.attackCrosshair(pitClickOwner, this::canPitClick));
 
     private boolean canPitClick() {
-        return isToggled() && com.nezurstandalone.contract.ContractCombatPolicy.allowsCrosshairAttack()
-                && correctionTick < 0 && !isOnBreak && !hasDragonEggPriority() && mc.thePlayer != null && mc.theWorld != null
+        return isToggled() && correctionTick < 0 && !isOnBreak && !hasDragonEggPriority() && mc.thePlayer != null && mc.theWorld != null
                 && mc.currentScreen == null && !mc.thePlayer.isDead && mc.thePlayer.getHealth() > 0
                 && !mc.thePlayer.isUsingItem() && !isAutoHealBusy()
                 && mc.thePlayer.openContainer == mc.thePlayer.inventoryContainer
                 && com.nezurstandalone.control.InventoryOwner.available(this)
-                && PitMapManager.getZone(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ).equals("Pit");
+                && PitMapManager.getZone(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ).equals("Pit")
+                && com.nezurstandalone.contract.ContractCombatPolicy.allowsCrosshairAttack();
     }
 
     private boolean hasDragonEggPriority() {
@@ -890,6 +890,7 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     private void releaseCombat() {
         combatPermitted = false;
+        com.nezurstandalone.contract.ContractCombatPolicy.noTarget();
         combat.stop();
         com.nezurstandalone.pathfinder.PathfinderManager.clearCombatTarget();
         // setCombatTarget(null) only drops the chase - if the walker was left active with no
@@ -907,6 +908,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         com.nezurstandalone.control.MovementKeys.release("grinder");
         com.nezurstandalone.control.InventoryOwner.release(this, false);
         combatPermitted = false;
+        com.nezurstandalone.contract.ContractCombatPolicy.noTarget();
         combat.stop();
         GuardedInput.cancel(interactionOwner);
         com.nezurstandalone.pathfinder.PathfinderManager.stopIfAvailable(this);
@@ -927,6 +929,8 @@ public class GrinderEngine extends Module implements DraggableHud {
     @SubscribeEvent
     public void onCombatFrame(TickEvent.RenderTickEvent event) {
         if (event.phase != TickEvent.Phase.START) return;
+        if (!isToggled() || !combatPermitted) com.nezurstandalone.contract.ContractCombatPolicy.noTarget();
+        else com.nezurstandalone.contract.ContractCombatPolicy.updateSneak();
         if (hasTemporaryPerkLease() && (contractKungFuRestoring || !contractKungFuReady)) {
             pitClicker.reset();
             GuardedInput.cancel(pitClickOwner);
@@ -1005,6 +1009,8 @@ public class GrinderEngine extends Module implements DraggableHud {
     @SubscribeEvent
     public void onTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.START) return;
+        if (!isToggled() || !combatPermitted) com.nezurstandalone.contract.ContractCombatPolicy.noTarget();
+        else com.nezurstandalone.contract.ContractCombatPolicy.updateSneak();
         diagnosticTick();
         if (isToggled() && closeUnaffordablePerkMenu()) return;
         if (!PathfinderManager.available(this)) { combat.stop(); combatPermitted=false; com.nezurstandalone.control.MovementKeys.release("grinder"); return; }

@@ -56,9 +56,38 @@ public final class ContractCombatPolicy {
         return true;
     }
 
+    /** Release stale automated sneak every tick/frame, even when no attack is attempted. */
+    public static void updateSneak() {
+        if (type != ContractOffer.Type.SNEAK_ATTACK_KILLS) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        MovingObjectPosition hit = mc.objectMouseOver;
+        if (!sneakHitReady(hit == null ? null : hit.entityHit)) releaseSneak();
+    }
+
+    private static boolean sneakHitReady(Entity intended) {
+        Minecraft mc = Minecraft.getMinecraft();
+        MovingObjectPosition hit = mc.objectMouseOver;
+        return mc.theWorld != null && mc.theWorld == world && mc.thePlayer != null
+                && mc.gameSettings != null && mc.currentScreen == null
+                && !mc.thePlayer.isDead && mc.thePlayer.getHealth() > 0 && !mc.thePlayer.isUsingItem()
+                && intended instanceof EntityPlayer && intended != mc.thePlayer
+                && !intended.isDead && intended.worldObj == mc.theWorld
+                && ((EntityPlayer) intended).getHealth() > 0
+                && mc.thePlayer.getDistanceToEntity(intended) <= sneakRadius
+                && "Pit".equals(com.nezurstandalone.utils.PitMapManager.getZone(
+                        mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ))
+                && hit != null && hit.typeOfHit == MovingObjectPosition.MovingObjectType.ENTITY
+                && hit.entityHit == intended && hit.hitVec != null
+                && mc.thePlayer.getPositionEyes(1.0F).distanceTo(hit.hitVec) <= sneakRadius;
+    }
+
     public static boolean allowsAttack(Entity intended) {
         Minecraft mc = Minecraft.getMinecraft();
         if (type == null) return true;
+        if (type == ContractOffer.Type.SNEAK_ATTACK_KILLS && !sneakHitReady(intended)) {
+            releaseSneak();
+            return false;
+        }
         if (mc.theWorld == null || mc.theWorld != world || mc.thePlayer == null
                 || !(intended instanceof EntityPlayer)) return false;
         if (!allowsTarget((EntityPlayer) intended)) return false;
@@ -109,7 +138,8 @@ public final class ContractCombatPolicy {
         }
         if (type == ContractOffer.Type.SNEAK_ATTACK_KILLS) {
             Minecraft mc = Minecraft.getMinecraft();
-            return mc.theWorld == world && mc.thePlayer != null && mc.thePlayer.isSneaking();
+            MovingObjectPosition hit = mc.objectMouseOver;
+            return allowsAttack(hit == null ? null : hit.entityHit);
         }
         Minecraft client=Minecraft.getMinecraft();
         if(type==ContractOffer.Type.NO_ARMOR_KILLS && client.thePlayer!=null){
