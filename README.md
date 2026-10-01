@@ -7,6 +7,8 @@
 
 # Nezur AutoContractor + AutoGrinder — Free
 
+
+# YOU SHOULD NOT GET BANNED BY ANTICHEAT, BUT STAFF WILL BAN YOU, USE AT OWN RISK
 A standalone **Minecraft Forge 1.8.9** mod with AutoContractor and AutoGrinder.
 
 ## Startup crash hotfix — 1.5.1
