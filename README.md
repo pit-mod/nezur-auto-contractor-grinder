@@ -11,9 +11,9 @@
 # YOU SHOULD NOT GET BANNED BY ANTICHEAT, BUT STAFF WILL BAN YOU, USE AT OWN RISK
 A standalone **Minecraft Forge 1.8.9** mod with AutoContractor and AutoGrinder.
 
-## Source update — 1.5.2
+## Update — 1.5.2
 
-The source now includes the latest premium AutoGrinder and AutoContractor improvements:
+This release includes the latest premium AutoGrinder and AutoContractor improvements:
 
 - Auto Blockhead, Auto Robbery and Auto Raffle settings in AutoGrinder (off by default).
 - Improved Spire entry, dragon-egg approach and nearby target selection.
@@ -22,7 +22,7 @@ The source now includes the latest premium AutoGrinder and AutoContractor improv
 - Physical mouse movement takes camera priority over automation.
 
 The free gold-contract recovery, sneak-hit cadence and Vile-only fallback are preserved.
-Build from source below to use 1.5.2; the download instructions refer to the existing 1.5.1 release.
+Download the 1.5.2 JAR from Releases below.
 
 ## Startup crash hotfix — 1.5.1
 
@@ -30,7 +30,7 @@ If 1.5 crashes with `IMixinService` missing, **replace the old JAR with 1.5.1**.
 
 ## Download and install
 
-1. Download **Nezur-AutoContractor-Grinder-1.5.1.jar** from [Releases](https://github.com/pit-mod/nezur-auto-contractor-grinder/releases/latest).
+1. Download **Nezur-AutoContractor-Grinder-1.5.2.jar** from [Releases](https://github.com/pit-mod/nezur-auto-contractor-grinder/releases/latest).
 2. Install Minecraft **Forge 1.8.9**.
 3. Put the JAR in the Minecraft instance's `mods` folder. Remove older standalone copies, then restart Minecraft.
 4. Press **Right Shift** to open the module menu.

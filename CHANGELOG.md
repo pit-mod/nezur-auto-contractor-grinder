@@ -1,4 +1,4 @@
-# 1.5.2 — Premium automation source sync
+# 1.5.2 — Premium automation improvements
 
 - Add opt-in Blockhead painting/powerup routing, Robbery targeting/rank banking and Raffle ticket collection/deposit.
 - Improve Spire entry detection, late entry from spawn and stale boss-countdown handling.
@@ -9,7 +9,7 @@
 - Apply automated camera output after physical mouse look; manual input temporarily owns the camera.
 - Retain the free gold-contract pickup recovery/population exemptions, sneak-click cadence, Vile-only fallback, standalone loader and config isolation.
 - Add event/ticket/location/camera regressions and verify the camera Mixin through the production Forge startup smoke test.
-- Source update only; the existing published release remains 1.5.1.
+- Release JAR: `Nezur-AutoContractor-Grinder-1.5.2.jar` (Forge 1.8.9).
 
 # 1.5.1 — Standalone startup hotfix
 
