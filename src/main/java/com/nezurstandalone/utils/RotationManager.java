@@ -160,6 +160,8 @@ public class RotationManager {
 
     /** Set while a screen is open; the camera stays still until this passes. */
     private long resumeAtMs = 0;
+    private final com.nezurstandalone.control.ManualCameraPriority manualCamera=new com.nezurstandalone.control.ManualCameraPriority();
+    private boolean physicalLookProcessed;
 
     private static final class Request {
         String owner;
@@ -209,6 +211,10 @@ public class RotationManager {
      */
     public void setTargetRotation(String owner, int priority, float yaw, float pitch,
                                   float speedMultiplier, boolean responsive) {
+        if(mc.currentScreen!=null || manualCamera.blocked(com.nezurstandalone.control.Clock.millis())) {
+            if(owner!=null)clearTarget(owner);
+            return;
+        }
         if (owner == null || !Float.isFinite(yaw) || !Float.isFinite(pitch)
                 || !Float.isFinite(speedMultiplier)) {
             if (owner != null) clearTarget(owner);
@@ -259,6 +265,21 @@ public class RotationManager {
     @SubscribeEvent
     public void onRenderTick(TickEvent.RenderTickEvent event) {
         if (event.phase != TickEvent.Phase.START) return;
+        // No camera output here: START precedes vanilla's physical mouse read.
+        if(rotationWorld!=mc.theWorld || rotationPlayer!=mc.thePlayer || mc.thePlayer==null || mc.theWorld==null
+                || mc.thePlayer.isDead || mc.currentScreen!=null) {
+            clearAll();lastRenderTime=0;manualCamera.reset();
+            rotationWorld=mc.theWorld;rotationPlayer=mc.thePlayer;
+        }
+    }
+
+    /** Vanilla skips its mouse branch in background windows; still drive fresh AFK requests. */
+    public void beginCameraFrame() { physicalLookProcessed=false; }
+    public void finishCameraFrame() { if(!physicalLookProcessed)afterMouseInput(0,0); }
+
+    /** Invoked after physical look, or once at frame end if vanilla skipped physical look. */
+    public void afterMouseInput(int physicalX,int physicalY) {
+        physicalLookProcessed=true;
         if (rotationWorld != mc.theWorld || rotationPlayer != mc.thePlayer) {
             clearAll();
             lastRenderTime = 0;
@@ -281,6 +302,10 @@ public class RotationManager {
         }
 
         long currentTime = com.nezurstandalone.control.Clock.millis();
+        if(manualCamera.sample(currentTime,physicalX,physicalY)) {
+            clearAll();lastRenderTime=currentTime;
+            return;
+        }
         if (lastRenderTime == 0) {
             lastRenderTime = currentTime;
             return;

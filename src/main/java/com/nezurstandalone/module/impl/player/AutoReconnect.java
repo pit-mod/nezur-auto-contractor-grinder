@@ -21,9 +21,11 @@ public class AutoReconnect extends Module {
     private Object disconnectScreen;
     private long disconnectSession;
     private GuiButton autoReconnectButton;
+    private final com.nezurstandalone.contract.ContractConnectionFlow recovery=new com.nezurstandalone.contract.ContractConnectionFlow();
+    private String lastServer="mc.pitclassic.net";
 
     public AutoReconnect() {
-        super("AutoReconnect", "Automatically reconnects to Pit Classic when disconnected.", Category.AUTO);
+        super("AutoReconnect", "Reconnects to the Pit server and rejoins Pit from lobby or Limbo.", Category.AUTO);
         addSettings(delay);
     }
 
@@ -31,12 +33,14 @@ public class AutoReconnect extends Module {
     public void onEnable() {
         super.onEnable();
         reconnecting = false;
+        recovery.reset();rememberServer();
     }
 
     @SubscribeEvent
     public void onGuiInit(GuiScreenEvent.InitGuiEvent.Post event) {
         if (!isToggled()) return;
         if (event.gui instanceof GuiDisconnected) {
+            rememberServer();recovery.reset();
             reconnecting = true; disconnectScreen=event.gui; disconnectSession=com.nezurstandalone.control.ClientSession.current();
             reconnectTimer.reset();
             int yPos = event.gui.height / 2 + event.gui.height / 4 + 24;
@@ -70,19 +74,37 @@ public class AutoReconnect extends Module {
     public void onTick(TickEvent.ClientTickEvent event) {
         if (!isToggled()) return;
         if (event.phase != TickEvent.Phase.END) return;
+        rememberServer();
         if (mc.currentScreen instanceof GuiDisconnected) {
             if (reconnecting) {
                 long delayMs = (long) (delay.value * 1000);
                 if (mc.currentScreen != disconnectScreen || disconnectSession != com.nezurstandalone.control.ClientSession.current()) { reconnecting=false; return; }
                 if (reconnectTimer.hasTimeElapsed(delayMs, false) && com.nezurstandalone.control.CommandCoordinator.reconnect(this)) {
                     reconnecting = false;
-                    ServerData serverData = new ServerData("Pit Classic", "mc.pitclassic.net", false);
+                    ServerData serverData = new ServerData("Pit", lastServer, false);
                     mc.displayGuiScreen(new GuiConnecting(new GuiMainMenu(), mc, serverData));
                 }
             }
         } else {
             reconnecting = false;
+            long now=com.nezurstandalone.control.Clock.millis();
+            com.nezurstandalone.contract.ContractConnectionFlow.Location location=com.nezurstandalone.utils.PitSessionLocation.current();
+            recovery.observe(location,now,(long)(delay.value*1000));
+            if(mc.currentScreen!=null||mc.thePlayer==null||mc.theWorld==null)return;
+            com.nezurstandalone.contract.ContractConnectionFlow.Action action=recovery.action(now,false);
+            String command=action==com.nezurstandalone.contract.ContractConnectionFlow.Action.LEAVE?"/l":
+                    action==com.nezurstandalone.contract.ContractConnectionFlow.Action.JOIN?"/play pit":null;
+            if(command!=null&&com.nezurstandalone.control.CommandCoordinator.send(this,command))recovery.sent(now);
         }
+    }
+
+    private void rememberServer(){
+        ServerData server=mc.getCurrentServerData();
+        if(server!=null&&com.nezurstandalone.utils.PitLocationTracker.supportedHost(server.serverIP))lastServer=server.serverIP;
+    }
+
+    @Override public void onDisable(){
+        reconnecting=false;recovery.reset();com.nezurstandalone.control.CommandCoordinator.cancel(this);super.onDisable();
     }
 
     private void updateButtonText() {

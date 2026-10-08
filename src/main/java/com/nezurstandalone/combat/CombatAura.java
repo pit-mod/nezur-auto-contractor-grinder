@@ -66,6 +66,11 @@ public final class CombatAura {
 
     /** Maximum eye-to-raycast-hit distance; never extends native survival reach. */
     private double reach = 3.0;
+    private double nearbyFirstRange;
+
+    /** Opt-in: select TTK winners from the nearby group before considering farther players. */
+    public CombatAura nearbyFirst(double range) {nearbyFirstRange=Math.max(0,range);return this;}
+    public static int proximityTier(double distance,double range) {return range>0 && distance>range?1:0;}
 
     /** Half-angle, in degrees, the crosshair must be within before a click is allowed. */
     private double fovToClick = 35.0;
@@ -204,6 +209,7 @@ public final class CombatAura {
     }
 
     private boolean isCurrentHit(Entity entity) {
+        if (entity instanceof EntityPlayer && selectionFilter != null && !selectionFilter.test((EntityPlayer) entity)) return false;
         net.minecraft.util.MovingObjectPosition hit = mc.objectMouseOver;
         return activityAllowed.getAsBoolean() && entity != null && mc.thePlayer != null && mc.currentScreen == null
                 && com.nezurstandalone.contract.ContractCombatPolicy.allowsAttack(entity)
@@ -299,6 +305,8 @@ public final class CombatAura {
     // policy per call; this decides *who*, the driver still decides *how* to fight them.
 
     private EntityPlayer stickyTarget;
+    private java.util.function.Predicate<EntityPlayer> selectionFilter;
+    private java.util.function.ToDoubleFunction<EntityPlayer> selectionScore;
     private int sameTargetTicks;
     private int tickCollided;
 
@@ -316,6 +324,22 @@ public final class CombatAura {
      */
     public EntityPlayer pickTarget(double aimReach, double attackReach, boolean pitZoneOnly,
                                    boolean prioritizeHealth, boolean teamCheckTdm) {
+        return pickTarget(aimReach, attackReach, pitZoneOnly, prioritizeHealth, teamCheckTdm, null);
+    }
+
+    /** Owner-specific eligibility also applies to queued attacks, including armor changes. */
+    public EntityPlayer pickTarget(double aimReach, double attackReach, boolean pitZoneOnly,
+                                   boolean prioritizeHealth, boolean teamCheckTdm,
+                                   java.util.function.Predicate<EntityPlayer> filter) {
+        return pickTarget(aimReach,attackReach,pitZoneOnly,prioritizeHealth,teamCheckTdm,filter,null);
+    }
+
+    public EntityPlayer pickTarget(double aimReach, double attackReach, boolean pitZoneOnly,
+                                   boolean prioritizeHealth, boolean teamCheckTdm,
+                                   java.util.function.Predicate<EntityPlayer> filter,
+                                   java.util.function.ToDoubleFunction<EntityPlayer> score) {
+        selectionFilter = filter;
+        selectionScore = score;
         if (mc.thePlayer == null || mc.theWorld == null) {
             return null;
         }
@@ -331,8 +355,9 @@ public final class CombatAura {
         EntityPlayer fresh=findBest(aimReach,attackReach,null,pitZoneOnly,true,teamCheckTdm);
         if(stickyTarget==null)stickyTarget=fresh;
         else if(fresh!=null && fresh!=stickyTarget && (contractTier(fresh)<contractTier(stickyTarget)
-                || TtkMath.better(evaluation(fresh,attackReach).ttk,
-                evaluation(stickyTarget,attackReach).ttk,ttkImprovement)))stickyTarget=fresh;
+                || (selectionScore!=null?selectionScore.applyAsDouble(fresh)<selectionScore.applyAsDouble(stickyTarget)
+                    :TtkMath.better(evaluation(fresh,attackReach).ttk,
+                        evaluation(stickyTarget,attackReach).ttk,ttkImprovement))))stickyTarget=fresh;
         if(ttkDebug && stickyTarget!=null && System.currentTimeMillis()-lastTtkLog>2000){
             lastTtkLog=System.currentTimeMillis();System.out.println("[TargetScore] "+stickyTarget.getName()+" "+evaluation(stickyTarget,attackReach));
         }
@@ -346,6 +371,7 @@ public final class CombatAura {
      * sight of someone must drop the lock, never keep swinging at a wall.
      */
     private boolean isStillValidTarget(EntityPlayer p, double aimReach, boolean pitZoneOnly, boolean teamCheckTdm) {
+        if (p != null && selectionFilter != null && !selectionFilter.test(p)) return false;
         if (p == null || p == mc.thePlayer || p.worldObj != mc.theWorld
                 || Math.abs(p.posY - mc.thePlayer.posY) > 8.0
                 || (mc.getNetHandler() != null && mc.getNetHandler().getPlayerInfo(p.getUniqueID()) == null
@@ -374,14 +400,15 @@ public final class CombatAura {
         for(EntityPlayer player:mc.theWorld.playerEntities){
             if(player==skip || !isStillValidTarget(player,aimReach,pitZoneOnly,teamCheckTdm))continue;
             int tier=contractTier(player);
-            double value=evaluation(player,attackReach).ttk;
+            double value=selectionScore==null?evaluation(player,attackReach).ttk:selectionScore.applyAsDouble(player);
             if(tier<bestTier || (tier==bestTier && (value<score || (value==score && best!=null && player.getEntityId()<best.getEntityId())))){bestTier=tier;score=value;best=player;}
         }
         return best;
     }
     // Contractor searches the nearest occupied 5-block band; normal grinder uses all valid candidates.
     private int contractTier(EntityPlayer player){
-        if(com.nezurstandalone.contract.ContractCombatPolicy.type()==null)return 0;
+        if(com.nezurstandalone.contract.ContractCombatPolicy.type()==null)
+            return proximityTier(mc.thePlayer.getDistanceToEntity(player),nearbyFirstRange);
         return Math.max(0,(int)Math.ceil(mc.thePlayer.getDistanceToEntity(player)/5.0)-1);
     }
     private double ttkSpeed=5.6,ttkInterval=.5,ttkDamage=6,ttkImprovement=20;

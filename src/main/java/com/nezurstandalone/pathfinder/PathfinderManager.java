@@ -560,6 +560,8 @@ public final class PathfinderManager {
         if (owner != null && owner != LEGACY_OWNER) return;
         cancelInternal(silent); owner = null;
     }
+    /** Abandon an exhausted route without losing event items. */
+    static void fail() { cancelInternal(true); owner=null; state=State.FAILED; outcome=Outcome.NO_PATH; }
     /** Walker completion/recovery is part of the currently leased navigation. */
     static void complete() { cancelInternal(true); owner=null; state=State.COMPLETED; }
     private static void cancelInternal(boolean silent) {

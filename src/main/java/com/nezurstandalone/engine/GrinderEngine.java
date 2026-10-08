@@ -74,6 +74,9 @@ public class GrinderEngine extends Module implements DraggableHud {
     public enum State {
         IDLE, LEAVING_SPAWN, FIGHTING, DRAGON_EGG, LOBBY_SWAP, LIMBO, LOBBY_RECONNECT, JOINING_PIT, PICKING_UP_MYSTIC,
         SPIRE_WAITING_SPAWN, SPIRE_WALK_TO_MID, SPIRE_FIGHTING,
+        BLOCKHEAD_PAINTING, BLOCKHEAD_POWERUP, BLOCKHEAD_FIGHTING, BLOCKHEAD_AVOIDING,
+        ROBBERY_FIGHTING, ROBBERY_RETREATING, ROBBERY_BANKED,
+        RAFFLE_TO_MID, RAFFLE_COLLECTING, RAFFLE_RETURNING, RAFFLE_DEPOSITING,
         PERK_NAVIGATING, PERK_INTERACTING, PERK_CLICKING_GUI,
         PRESTIGE_NAVIGATING, PRESTIGE_INTERACTING, PRESTIGE_CLICKING_GUI
     }
@@ -89,7 +92,10 @@ public class GrinderEngine extends Module implements DraggableHud {
             .pauseChance(0.0).emitter(() -> GuardedInput.attackCrosshair(pitClickOwner, this::canPitClick));
 
     private boolean canPitClick() {
-        return isToggled() && correctionTick < 0 && !isOnBreak && !hasDragonEggPriority() && mc.thePlayer != null && mc.theWorld != null
+        return isToggled() && correctionTick < 0 && !isOnBreak && !hasDragonEggPriority() && !isAutoRaffleActive() && !isAutoBlockheadActive() && mc.thePlayer != null && mc.theWorld != null
+                && (!isAutoRobberyActive() || (combatPermitted && combat.getTarget() instanceof EntityPlayer
+                    && robbery.canTarget((EntityPlayer)combat.getTarget()) && mc.objectMouseOver!=null
+                    && mc.objectMouseOver.entityHit==combat.getTarget()))
                 && mc.currentScreen == null && !mc.thePlayer.isDead && mc.thePlayer.getHealth() > 0
                 && !mc.thePlayer.isUsingItem() && !isAutoHealBusy()
                 && mc.thePlayer.openContainer == mc.thePlayer.inventoryContainer
@@ -195,11 +201,25 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     public static boolean isRunning() { return instance != null && instance.isToggled(); }
 
+    public static boolean isAutoBlockheadActive() {
+        return isRunning() && instance.autoBlockhead.isEnabled() && BlockheadController.live();
+    }
+
+    public static boolean isAutoRobberyActive() {
+        return isRunning() && instance.autoRobbery.isEnabled() && RobberyController.live();
+    }
+
+    public static boolean isAutoRaffleActive() {
+        return isRunning() && instance.autoRaffle.isEnabled() && RaffleController.live();
+    }
+
     /** Exempts only this grinder's healing from the navigation item-use pause. */
     public static boolean allowsHealingMovement() {
         return isRunning() && instance.correctionTick < 0 && !instance.isOnBreak
                 && instance.isAutoHealBusy() && PathfinderManager.available(instance)
                 && (instance.currentState == State.FIGHTING || instance.currentState == State.SPIRE_FIGHTING
+                    || instance.isBlockheadState()
+                    || instance.currentState==State.ROBBERY_FIGHTING || instance.currentState==State.ROBBERY_RETREATING
                     || instance.currentState == State.DRAGON_EGG || instance.currentState == State.PICKING_UP_MYSTIC);
     }
 
@@ -246,6 +266,24 @@ public class GrinderEngine extends Module implements DraggableHud {
     private final BooleanSetting mysticPickup = new BooleanSetting("Mystic Pickup", true);
     private final BooleanSetting idleRetreat = new BooleanSetting("Idle Retreat", false);
     private final BooleanSetting spireMode = new BooleanSetting("Spire Mode", true);
+    private final BooleanSetting autoBlockhead = new BooleanSetting("Auto Blockhead", false);
+    private final BooleanSetting autoRobbery = new BooleanSetting("Auto Robbery", false);
+    private final BooleanSetting autoRaffle = new BooleanSetting("Auto Raffle", false);
+    private final RaffleController raffle = new RaffleController();
+    private final Object raffleInputOwner = new Object();
+    private static final String RAFFLE_MOVEMENT_OWNER="grinder.raffle", RAFFLE_ROTATION_OWNER="grinder.raffle.aim";
+    private final ClickSimulator.Rate raffleClickRate=new ClickSimulator.Rate(() -> 6.0);
+    private boolean raffleOwned, raffleEnteringMid, raffleSlotOwned, raffleInventoryPending;
+    private long raffleRepathAt;
+    private int rafflePathTicket=Integer.MIN_VALUE;
+    private final RobberyController robbery = new RobberyController();
+    private boolean robberyOwned;
+    private long robberyRetreatAt;
+    private final BlockheadController blockhead = new BlockheadController();
+    private long blockheadRepathAt;
+    private boolean blockheadOwned;
+    private boolean eventApproaching;
+    private boolean blockheadEnteringMid;
     private final BooleanSetting squadSupport = new BooleanSetting("Squad Support", true);
     private final BooleanSetting nightQuestSupport = new BooleanSetting("Night Quest Support", true);
     private final BooleanSetting autoPerk = new BooleanSetting("Auto Perk", true);
@@ -276,13 +314,18 @@ public class GrinderEngine extends Module implements DraggableHud {
     private final BooleanSetting debugLogging = new BooleanSetting("Debug Logging", false);
 
     // ---- combat -------------------------------------------------------------
-    private final CombatAura combat = new CombatAura().cps(8, 12).reach(3.0).fovToClick(60.0).clickRange(3.0)
+    private final CombatAura combat = new CombatAura().cps(8, 12).reach(3.0).fovToClick(60.0).clickRange(3.0).nearbyFirst(5.0)
             .allowedWhen(this::mayFight)
             .allowUnlistedPitNpcsWhen(() -> isClassicPitTitle(Utils.getScoreboardTitle()));
 
     private boolean mayFight() {
-        return combatPermitted && isToggled() && !isOnBreak && !isAutoHealBusy() && !hasDragonEggPriority()
-                && PathfinderManager.available(this) && (currentState == State.FIGHTING || currentState == State.SPIRE_FIGHTING);
+        return combatPermitted && isToggled() && !isOnBreak && !isAutoHealBusy() && !hasDragonEggPriority() && !isAutoBlockheadActive()
+                && PathfinderManager.available(this) && isCombatState(currentState);
+    }
+
+    private static boolean isCombatState(State state) {
+        return state == State.FIGHTING || state == State.SPIRE_FIGHTING
+                || state == State.ROBBERY_FIGHTING;
     }
 
     // ---- core state ---------------------------------------------------------
@@ -541,6 +584,8 @@ public class GrinderEngine extends Module implements DraggableHud {
     private long eggBlacklistUntil = 0L;
     private long eggUnstuckUntil = 0L;
     private int eggUnstuckAttempts = 0;
+    private static final String EGG_MOVEMENT_OWNER = "grinder-egg";
+    private double eggApproachBestDistance = Double.MAX_VALUE;
     private long mysticRepathAt = 0L;
     private boolean sawMysticItem = false;
     private ItemStack mysticPickupStack;
@@ -562,7 +607,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         instance = this;
         com.nezurstandalone.control.SessionResets.register(this,this::resetSessionActivity);
         addSettings(minMidPlayers, lobbySwap, lobbySwapDelay, autoWeapon, mysticPickup, idleRetreat,
-                spireMode, squadSupport, nightQuestSupport, autoPerk, perk1, perk2, perk3, perk4, theWay,
+                spireMode, autoBlockhead, autoRobbery, autoRaffle, squadSupport, nightQuestSupport, autoPerk, perk1, perk2, perk3, perk4, theWay,
                 autoKillstreak, ks1, ks2,
                 autoPrestige, dragonEggSupport, muteGame,
                 breakTimeEnable, workDurationLimit, breakDurationLimit,
@@ -580,6 +625,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private void resetSessionActivity(){
+        blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
         deferredSyncGoldRequirement=Double.NaN;deferredSyncGoldSignature="";deferredSyncGoldUntil=0L;
         perkGoldPreflightDone=false;preflightPerkGoldCost=0.0;
         pauseGameplay();resetMenuTracking();combat.resetTargeting();PathfinderManager.clear(this,true);
@@ -828,6 +874,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     @Override
     protected void onEnable() {
         super.onEnable();
+        blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
         currentState = State.IDLE;
         combatPermitted = false;
         resetMenuTracking();
@@ -868,6 +915,7 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     @Override
     protected void onDisable() {
+        blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
         cancelMysticStow();
         com.nezurstandalone.control.GrinderDiagnostics.setActive(false, new java.io.File(mc.mcDataDir, "logs/nezur-diagnostics"));
         pauseGameplay();
@@ -902,6 +950,9 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private void pauseGameplay() {
+        releaseRaffleInteraction();
+        releaseEventApproach();
+        com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
         com.nezurstandalone.control.MovementKeys.release("grinder-npc");
         pitClicker.reset();
         GuardedInput.cancel(pitClickOwner);
@@ -958,11 +1009,11 @@ public class GrinderEngine extends Module implements DraggableHud {
             GuardedInput.cancel(pitClickOwner);
         }
 
-        if (!isToggled() || !combatPermitted || isOnBreak || mc.thePlayer == null
+        if (!isToggled() || !combatPermitted || isOnBreak || isAutoBlockheadActive() || mc.thePlayer == null
                 || mc.theWorld == null || mc.currentScreen != null || mc.thePlayer.isDead
                 || mc.thePlayer.getHealth() <= 0 || !PathfinderManager.available(this)
                 || (mc.thePlayer.isUsingItem() && !isAutoHealBusy())
-                || (currentState != State.FIGHTING && currentState != State.SPIRE_FIGHTING)) {
+                || !isCombatState(currentState)) {
             combat.stop();
             return;
         }
@@ -1013,7 +1064,15 @@ public class GrinderEngine extends Module implements DraggableHud {
         else com.nezurstandalone.contract.ContractCombatPolicy.updateSneak();
         diagnosticTick();
         if (isToggled() && closeUnaffordablePerkMenu()) return;
-        if (!PathfinderManager.available(this)) { combat.stop(); combatPermitted=false; com.nezurstandalone.control.MovementKeys.release("grinder"); return; }
+        if (!PathfinderManager.available(this)) {
+            releaseRaffleInteraction();releaseEventApproach();
+            combat.stop(); combatPermitted=false;
+            com.nezurstandalone.control.MovementKeys.release("grinder");
+            com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
+            GuardedInput.cancel(interactionOwner);
+            RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
+            return;
+        }
         try {
             runGrinderTick(event);
         } catch (RuntimeException failure) {
@@ -1048,6 +1107,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (event.phase != TickEvent.Phase.START) return;
         combatPermitted = false;
         if (engineWorld != mc.theWorld || enginePlayer != mc.thePlayer) {
+            blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
             pauseGameplay(); PathfinderManager.clear(this, true); resetMenuTracking(); combat.resetTargeting();
             engineWorld = mc.theWorld; enginePlayer = mc.thePlayer;
             currentState = State.IDLE; previousZone = ""; lastMidScan = 0; cachedMidCount = 0;
@@ -1061,6 +1121,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (mc.thePlayer != null && (mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0)) wasDeadLastTick = true;
         if (!isToggled() || mc.thePlayer == null || mc.theWorld == null
                 || mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0) {
+            blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
             pauseGameplay();
             resetMenuTracking();
             return;
@@ -1133,12 +1194,10 @@ public class GrinderEngine extends Module implements DraggableHud {
         updateSpireStatus();
 
         String title = Utils.getScoreboardTitle();
-        boolean inPit = isPitScoreboardTitle(title);
-        boolean inLobby = (Utils.onHypixel() && title.equalsIgnoreCase("HYPIXEL"))
-                || ("PIT CLASSIC".equalsIgnoreCase(title.trim())
-                    && Utils.getScoreboardLines().stream().anyMatch(line ->
-                        StringUtils.stripControlCodes(line).trim().equalsIgnoreCase("NETWORK LOBBY")));
-        boolean inLimbo = Utils.onHypixel() && title.equalsIgnoreCase("LIMBO"); // Empty sidebar is UNKNOWN.
+        com.nezurstandalone.contract.ContractConnectionFlow.Location location=com.nezurstandalone.utils.PitSessionLocation.current();
+        boolean inPit = location==com.nezurstandalone.contract.ContractConnectionFlow.Location.PIT;
+        boolean inLobby = location==com.nezurstandalone.contract.ContractConnectionFlow.Location.LOBBY;
+        boolean inLimbo = location==com.nezurstandalone.contract.ContractConnectionFlow.Location.LIMBO;
 
         // Prestige swap bookkeeping: once we have left the pit (into lobby/limbo) the swap is under
         // way; when we are back in the pit the level has refreshed, so clear the pending block. A
@@ -1191,7 +1250,7 @@ public class GrinderEngine extends Module implements DraggableHud {
                 && !Utils.isInSpawn()) {
             pauseGameplay();
             if (contractNow - contractPerkTravelAt > 3000L
-                    && com.nezurstandalone.control.CommandCoordinator.send(this, "/oof")) contractPerkTravelAt = contractNow;
+                    && sendRecoveryOof()) contractPerkTravelAt = contractNow;
             return;
         }
 
@@ -1207,11 +1266,12 @@ public class GrinderEngine extends Module implements DraggableHud {
 
         // A detected egg preempts combat and NPC navigation, except while a temporary perk lease
         // is being prepared or restored and must retain its path to the upgrades NPC.
-        if (dragonEggSupport.isEnabled() && !(hasTemporaryPerkLease()
+        if (!isAutoBlockheadActive() && !isAutoRobberyActive() && !isAutoRaffleActive() && !isSpireActive() && dragonEggSupport.isEnabled() && !(hasTemporaryPerkLease()
                 && (contractKungFuRestoring || !contractKungFuReady))) scanDragonEgg();
         else currentEgg = null;
         if (hasDragonEggPriority()) { handleDragonEgg(); return; }
         if (currentState == State.DRAGON_EGG) {
+            com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
             GuardedInput.cancel(interactionOwner);
             RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
             PathfinderManager.clear(this,true); currentState=State.IDLE; lastEggPos=null;
@@ -1235,7 +1295,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         String zone = PitMapManager.getZone(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
         boolean inSpawn = zone.equals("Spawn") || zone.equals("Overspawn");
         if (!zone.equals(previousZone)) { previousZone = zone; otherZoneEntryTime = com.nezurstandalone.control.Clock.millis(); }
-        if ((currentState == State.IDLE || currentState == State.LEAVING_SPAWN)) {
+        if (!isAutoBlockheadActive() && !isAutoRobberyActive() && !isAutoRaffleActive() && (currentState == State.IDLE || currentState == State.LEAVING_SPAWN)) {
             if (!hasTemporaryPerkLease() && !prestigeSwapPending && !classicPrestigePending
                     && autoPrestige.isEnabled() && Utils.getLevel() >= 120 && startPrestigeProcess()) return;
             if (checkPerkTriggers()) return;
@@ -1251,6 +1311,28 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (currentState == State.LOBBY_SWAP) { handleLobbySwapInPit(); return; }
 
         if(contractGappleRequested){pauseGameplay();return;}
+
+        if (isAutoRaffleActive()) {handleRaffle(inSpawn);return;}
+        if (raffleOwned) {
+            resetRaffle();releaseEventApproach();releaseCombat();combat.resetTargeting();
+            PathfinderManager.clear(this,true);currentState=State.IDLE;
+        }
+
+        // Blockhead owns scoring movement for the whole active event, ahead of lobby population
+        // swaps, break shifts and the ordinary mid grinder; menus and reconnects still own above.
+        if (isAutoBlockheadActive()) { handleBlockhead(inSpawn); return; }
+        if (isBlockheadState() || blockheadOwned) {
+            releaseEventApproach();
+            blockheadOwned=false;
+            blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle(); releaseCombat(); combat.resetTargeting();
+            PathfinderManager.clear(this,true); currentState=State.IDLE;
+        }
+        if (isAutoRobberyActive()) {handleRobbery(inSpawn);return;}
+        if (robberyOwned) {
+            releaseEventApproach();
+            robbery.reset();robberyOwned=false;robberyRetreatAt=0;
+            releaseCombat();combat.resetTargeting();PathfinderManager.clear(this,true);currentState=State.IDLE;
+        }
 
         // --- Spire priority: overrides lobby-swap / break / idle ----------
         if (isSpireActive()) { handleSpire(); return; }
@@ -1269,7 +1351,7 @@ public class GrinderEngine extends Module implements DraggableHud {
                 long t = com.nezurstandalone.control.Clock.millis();
                 if (!inSpawn) {
                     if (t - oofCooldown > 3000L && t >= throttleCooldownEnd) {
-                        if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/oof")) return; oofCooldown = t;
+                        if (!sendRecoveryOof()) return; oofCooldown = t;
                     }
                 } else {
                     releaseCombat(); releaseSpawnWalk(true); PathfinderManager.clear(this, true); currentState = State.IDLE;
@@ -1304,7 +1386,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (lobbySwap.isEnabled() && !priorityEvent && shouldLobbySwap()) {
             pauseGameplay();
             if (inSpawn) { enterLobbySwap(); return; }
-            if (now - oofCooldown > 3000L && now >= throttleCooldownEnd) { if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/oof")) return; oofCooldown = now; }
+            if (now - oofCooldown > 3000L && now >= throttleCooldownEnd) { if (!sendRecoveryOof()) return; oofCooldown = now; }
             return;
         }
 
@@ -1346,12 +1428,12 @@ public class GrinderEngine extends Module implements DraggableHud {
         // Stop the walker only when entering this state or if it somehow became active - 
         // calling stop() every tick reset the forward key this method presses below and 
         // cleared its own rotation request, so the bot stood still.
-        if (currentState != State.LEAVING_SPAWN || com.nezurstandalone.pathfinder.AutoWalker.INSTANCE.isActive() || com.nezurstandalone.pathfinder.PathfinderManager.hasDestination()) {
+        if ((currentState != State.LEAVING_SPAWN && currentState != State.SPIRE_WALK_TO_MID) || com.nezurstandalone.pathfinder.AutoWalker.INSTANCE.isActive() || com.nezurstandalone.pathfinder.PathfinderManager.hasDestination()) {
             com.nezurstandalone.pathfinder.PathfinderManager.clearCombatTarget();
             com.nezurstandalone.pathfinder.PathfinderManager.stopIfAvailable(this);
             com.nezurstandalone.pathfinder.PathfinderManager.clear(this, true);
         }
-        currentState = State.LEAVING_SPAWN;
+        if(currentState!=State.SPIRE_WALK_TO_MID)currentState = State.LEAVING_SPAWN;
         oofCooldown = 0L;
         long now = com.nezurstandalone.control.Clock.millis();
         if (spawnWalkStart == 0L) spawnWalkStart = now;
@@ -1363,7 +1445,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         double dz = 0.0 - mc.thePlayer.posZ;
         float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
         RotationManager.getInstance().setTargetRotation(MOVEMENT_ROTATION_OWNER,
-                RotationManager.PRIORITY_LEGACY, yaw, mc.thePlayer.rotationPitch, 9.0f);
+                RotationManager.PRIORITY_LEGACY, yaw, mc.thePlayer.rotationPitch, 18.0f);
         com.nezurstandalone.control.MovementKeys.set("grinder", mc.gameSettings.keyBindForward.getKeyCode(), true);
         com.nezurstandalone.control.MovementKeys.set("grinder", mc.gameSettings.keyBindSprint.getKeyCode(), true);
         // Sprint-jumping out of spawn carries speed, but re-jumping on the exact landing tick is a
@@ -1396,7 +1478,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             releaseSpawnWalk(true);
             com.nezurstandalone.pathfinder.PathfinderManager.resetIfAvailable(this);
             if (now - oofCooldown > 3000L && now >= throttleCooldownEnd) {
-                if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/oof")) return; oofCooldown = now;
+                if (!sendRecoveryOof()) return; oofCooldown = now;
             }
         }
     }
@@ -1524,7 +1606,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (!hitRecently && !freshInZone && now - oofCooldown > 3000L && now >= throttleCooldownEnd
                 && !(squadSupport.isEnabled() && isSquadsEventActive())) {
             log("Stuck outside the pit, /oof.");
-            if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/oof")) return;
+            if (!sendRecoveryOof()) return;
             oofCooldown = now;
         }
     }
@@ -1563,6 +1645,299 @@ public class GrinderEngine extends Module implements DraggableHud {
         return v;
     }
 
+    private boolean isBlockheadState() {
+        return currentState==State.BLOCKHEAD_PAINTING || currentState==State.BLOCKHEAD_POWERUP
+                || currentState==State.BLOCKHEAD_FIGHTING || currentState==State.BLOCKHEAD_AVOIDING;
+    }
+
+    private void handleBlockhead(boolean inSpawn) {
+        if(!blockheadOwned) {
+            blockheadEnteringMid=inSpawn;blockheadRepathAt=0;
+            releaseEventApproach();PathfinderManager.clear(this,true);
+        }
+        blockheadOwned=true;
+        long now=com.nezurstandalone.control.Clock.millis();
+        isOnBreak=false;
+        releaseCombat();combat.resetTargeting();pitClicker.reset();GuardedInput.cancel(pitClickOwner);
+        blockhead.begin(now);
+        if(inSpawn) {blockheadEnteringMid=true;releaseEventApproach();blockhead.interrupted();handleSpawn();return;}
+        if(spawnWalkStart!=0L)releaseSpawnWalk(true);
+        if(blockheadEnteringMid) {
+            currentState=State.BLOCKHEAD_PAINTING;
+            if(approachEventMid())return;
+            blockheadEnteringMid=false;
+        }
+        BlockheadController.Goal goal=blockhead.plan(now);
+        if(goal==null) {currentState=State.BLOCKHEAD_PAINTING;approachEventMid();return;}
+        boolean pickup=goal.kind==BlockheadController.GoalKind.POWERUP;
+        currentState=pickup?State.BLOCKHEAD_POWERUP:State.BLOCKHEAD_PAINTING;
+        double pickupDx=goal.pickupPosition.xCoord-mc.thePlayer.posX;
+        double pickupDz=goal.pickupPosition.zCoord-mc.thePlayer.posZ;
+        double distance=Math.hypot(pickupDx,pickupDz);
+        if(!pickup || (distance<=2 && Math.abs(goal.pickupPosition.yCoord-mc.thePlayer.posY)<1.6)) {
+            if(PathfinderManager.hasDestination() || AutoWalker.INSTANCE.isActive())PathfinderManager.clear(this,true);
+            eventApproaching=true;
+            float yaw=distance<.1?mc.thePlayer.rotationYaw:(float)Math.toDegrees(Math.atan2(-pickupDx,pickupDz));
+            double titleHeight=goal.titlePosition.yCoord-(mc.thePlayer.posY+mc.thePlayer.getEyeHeight());
+            float pitch=pickup?(float)-Math.toDegrees(Math.atan2(titleHeight,Math.max(.1,distance))):mc.thePlayer.rotationPitch;
+            RotationManager.getInstance().setTargetRotation(MOVEMENT_ROTATION_OWNER,RotationManager.PRIORITY_MACRO,
+                    yaw,pitch,(float)interactAimSpeed.value,true);
+            boolean aligned=Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(yaw-mc.thePlayer.rotationYaw))<30;
+            boolean moving=aligned && distance>(pickup?(goal.cooldown>0?1.4:.2):1.0);
+            com.nezurstandalone.control.MovementKeys.set("grinder",mc.gameSettings.keyBindForward.getKeyCode(),moving);
+            com.nezurstandalone.control.MovementKeys.set("grinder",mc.gameSettings.keyBindSprint.getKeyCode(),moving && !pickup);
+            com.nezurstandalone.control.MovementKeys.set("grinder",mc.gameSettings.keyBindJump.getKeyCode(),
+                    moving && mc.thePlayer.onGround && mc.thePlayer.isCollidedHorizontally);
+            return;
+        }
+        releaseEventApproach();
+        if(PathfinderManager.isNavigatingTo(goal.position) && PathfinderManager.getState()==PathfinderManager.State.FAILED) {
+            blockhead.failed(now);PathfinderManager.clear(this,true);blockheadRepathAt=now+500;return;
+        }
+        if(now>=blockheadRepathAt && (!PathfinderManager.isNavigatingTo(goal.position)
+                || PathfinderManager.getState()==PathfinderManager.State.CANCELLED
+                || PathfinderManager.getState()==PathfinderManager.State.COMPLETED)) {
+            PathfinderManager.walkTo(this,goal.position.getX()+.5,goal.position.getY(),goal.position.getZ()+.5,
+                    true,blockhead.routeBounds());
+            blockheadRepathAt=now+1500;
+        }
+    }
+
+    /** Event entry/idle movement goes straight to mid, just like the spawn drop-in. */
+    private boolean approachEventMid() {
+        return approachEventMid(6.0);
+    }
+
+    private boolean approachEventMid(double arrivalDistance) {
+        if(PathfinderManager.hasDestination() || AutoWalker.INSTANCE.isActive())PathfinderManager.clear(this,true);
+        double[] center=arrivalDistance<=1?new double[]{0,0}:centerSpot();
+        double dx=center[0]-mc.thePlayer.posX, dz=center[1]-mc.thePlayer.posZ;
+        if(Math.hypot(dx,dz)<=arrivalDistance) {releaseEventApproach();return false;}
+        eventApproaching=true;
+        float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
+        RotationManager.getInstance().setTargetRotation(MOVEMENT_ROTATION_OWNER,RotationManager.PRIORITY_LEGACY,
+                yaw,mc.thePlayer.rotationPitch,18.0f);
+        boolean aligned=Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(yaw-mc.thePlayer.rotationYaw))<60;
+        com.nezurstandalone.control.MovementKeys.set("grinder",mc.gameSettings.keyBindForward.getKeyCode(),aligned);
+        com.nezurstandalone.control.MovementKeys.set("grinder",mc.gameSettings.keyBindSprint.getKeyCode(),aligned);
+        com.nezurstandalone.control.MovementKeys.set("grinder",mc.gameSettings.keyBindJump.getKeyCode(),
+                aligned && mc.thePlayer.onGround && mc.thePlayer.isCollidedHorizontally);
+        return true;
+    }
+
+    private void releaseEventApproach() {
+        if(!eventApproaching)return;
+        releaseSpawnWalk(true);RotationManager.getInstance().clearTarget(MOVEMENT_ROTATION_OWNER);eventApproaching=false;
+    }
+
+    private void handleRobbery(boolean inSpawn) {
+        robberyOwned=true;isOnBreak=false;
+        long now=com.nezurstandalone.control.Clock.millis();
+        if(robbery.updateHold()) {
+            releaseEventApproach();
+            releaseCombat();combat.resetTargeting();releaseSpawnWalk(true);
+            if(inSpawn) {PathfinderManager.clear(this,true);currentState=State.ROBBERY_BANKED;return;}
+            if(currentState!=State.ROBBERY_RETREATING){PathfinderManager.clear(this,true);robberyRetreatAt=0;}
+            currentState=State.ROBBERY_RETREATING;
+            // /oof would risk throwing away the event gold. Wait out combat and use /spawn.
+            if(now-oofCooldown>3000 && now>=throttleCooldownEnd
+                    && com.nezurstandalone.control.CommandCoordinator.send(this,"/spawn"))oofCooldown=now;
+            if(now>=robberyRetreatAt) {
+                BlockPos retreat=robbery.retreat();
+                if(retreat!=null)PathfinderManager.walkTo(this,retreat.getX()+.5,retreat.getY(),retreat.getZ()+.5,true);
+                robberyRetreatAt=now+2500;
+            }
+            return;
+        }
+        if(inSpawn) {releaseEventApproach();handleSpawn();return;}
+        if(spawnWalkStart!=0L)releaseSpawnWalk(true);
+        robbery.scan(now);
+        EntityPlayer target=combat.pickTarget(5,botAttackReach.value,true,true,teamCheckTdm.isEnabled(),robbery::canTarget,robbery::targetScore);
+        currentState=State.ROBBERY_FIGHTING;
+        if(target!=null) {
+            releaseEventApproach();
+            equipBestWeapon();combatPermitted=true;combat.setTarget(target);driveCombatMovement(target);lastAttackTime=now;
+        } else {releaseCombat();combat.resetTargeting();approachEventMid();}
+    }
+
+    // ---- Raffle -------------------------------------------------------------
+    private void resetRaffle() {
+        releaseRaffleInteraction();raffle.reset();raffleOwned=false;raffleEnteringMid=true;
+        raffleRepathAt=0;rafflePathTicket=Integer.MIN_VALUE;raffleClickRate.reset();
+    }
+
+    private void releaseRaffleInteraction() {
+        GuardedInput.cancel(raffleInputOwner);
+        com.nezurstandalone.input.WindowActions.cancel(raffleInputOwner);
+        com.nezurstandalone.control.MovementKeys.release(RAFFLE_MOVEMENT_OWNER);
+        RotationManager.getInstance().clearTarget(RAFFLE_ROTATION_OWNER);
+        if(raffleSlotOwned)com.nezurstandalone.control.InventoryOwner.release(this,true);
+        raffleSlotOwned=false;raffleInventoryPending=false;
+    }
+
+    /** Keep tickets concealed on every travelling/collection tick, even with Auto Weapon off. */
+    private void putAwayRaffleTickets() {
+        putAwayRaffleTickets(true);
+    }
+
+    private void putAwayRaffleTickets(boolean releaseMovement) {
+        if(releaseMovement)releaseRaffleInteraction();
+        else {
+            GuardedInput.cancel(raffleInputOwner);com.nezurstandalone.input.WindowActions.cancel(raffleInputOwner);
+            if(raffleSlotOwned)com.nezurstandalone.control.InventoryOwner.release(this,true);
+            raffleSlotOwned=false;raffleInventoryPending=false;
+        }
+        if(!RaffleController.isTicket(mc.thePlayer.getHeldItem()) || isAutoHealBusy())return;
+        equipBestWeapon();
+        if(!RaffleController.isTicket(mc.thePlayer.getHeldItem()))return;
+        for(int slot=0;slot<9;slot++)if(!RaffleController.isTicket(mc.thePlayer.inventory.getStackInSlot(slot))) {
+            if(com.nezurstandalone.control.InventoryOwner.select(this,slot))com.nezurstandalone.control.InventoryOwner.release(this,false);
+            return;
+        }
+    }
+
+    private void skipRaffleTicket(long now) {
+        raffle.failedTicket(now);putAwayRaffleTickets();PathfinderManager.clear(this,true);
+        rafflePathTicket=Integer.MIN_VALUE;raffleRepathAt=0;
+    }
+
+    private boolean sendRecoveryOof() {
+        return !isAutoRaffleActive() && com.nezurstandalone.control.CommandCoordinator.send(this,"/oof");
+    }
+
+    private void handleRaffle(boolean inSpawn) {
+        long now=com.nezurstandalone.control.Clock.millis();
+        if(!raffleOwned) {
+            raffleEnteringMid=true;raffleRepathAt=0;releaseEventApproach();
+            PathfinderManager.clear(this,true);
+        }
+        raffleOwned=true;isOnBreak=false;
+        releaseCombat();combat.resetTargeting();pitClicker.reset();GuardedInput.cancel(pitClickOwner);
+        if(inSpawn) {raffleEnteringMid=true;putAwayRaffleTickets();handleSpawn();return;}
+        if(spawnWalkStart!=0L)releaseSpawnWalk(true);
+        if(raffleEnteringMid) {
+            putAwayRaffleTickets();currentState=State.RAFFLE_TO_MID;
+            if(approachEventMid())return;
+            raffleEnteringMid=false;
+        }
+        if(raffle.updateDeposit()) {rafflePathTicket=Integer.MIN_VALUE;handleRaffleDeposit(now);return;}
+        currentState=State.RAFFLE_COLLECTING;
+        EntityItem ticket=raffle.findTicket(now);
+        if(ticket==null || ticket.getEntityId()!=rafflePathTicket) {
+            if(rafflePathTicket!=Integer.MIN_VALUE)PathfinderManager.clear(this,true);
+            rafflePathTicket=Integer.MIN_VALUE;raffleRepathAt=0;
+        }
+        if(ticket==null) {putAwayRaffleTickets();approachEventMid();return;}
+        releaseEventApproach();
+        BlockPos stand=raffle.ticketStand(ticket);
+        if(rafflePathTicket==ticket.getEntityId() && PathfinderManager.available(this)) {
+            com.nezurstandalone.pathfinder.PathSnapshot route=PathfinderManager.getSnapshot();
+            boolean failed=PathfinderManager.getState()==PathfinderManager.State.FAILED;
+            boolean stoppedShort=PathfinderManager.getState()==PathfinderManager.State.COMPLETED
+                    && mc.thePlayer.getDistanceToEntity(ticket)>1.0;
+            boolean endsShort=false;
+            if(!route.isEmpty() && stand!=null && stand.equals(route.getDestination())) {
+                net.minecraft.util.Vec3 end=route.get(route.size()-1);
+                endsShort=!RaffleTicketProgress.withinPickup(end.xCoord,end.yCoord,end.zCoord,ticket.posX,ticket.posY,ticket.posZ);
+            }
+            if(failed || stoppedShort || endsShort) {skipRaffleTicket(now);return;}
+        }
+        double horizontal=Math.hypot(ticket.posX-mc.thePlayer.posX,ticket.posZ-mc.thePlayer.posZ);
+        if(horizontal<2.8 && Math.abs(ticket.posY-mc.thePlayer.posY)<1.5
+                && (horizontal<.4 || eggForwardClear(ticket.posX,ticket.posZ))) {
+            putAwayRaffleTickets(false);
+            if(PathfinderManager.hasDestination() || AutoWalker.INSTANCE.isActive())PathfinderManager.clear(this,true);
+            float[] aim=RotationUtils.getRotations(ticket);
+            RotationManager.getInstance().setTargetRotation(RAFFLE_ROTATION_OWNER,RotationManager.PRIORITY_MACRO,
+                    aim[0],aim[1],(float)interactAimSpeed.value,true);
+            boolean aligned=Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(aim[0]-mc.thePlayer.rotationYaw))<30;
+            com.nezurstandalone.control.MovementKeys.set(RAFFLE_MOVEMENT_OWNER,mc.gameSettings.keyBindForward.getKeyCode(),aligned && horizontal>.25);
+            return;
+        }
+        putAwayRaffleTickets();
+        if(stand==null) {skipRaffleTicket(now);return;}
+        if(now>=raffleRepathAt && (!PathfinderManager.isNavigatingTo(stand)
+                || PathfinderManager.getState()==PathfinderManager.State.COMPLETED
+                || PathfinderManager.getState()==PathfinderManager.State.CANCELLED)) {
+            if(PathfinderManager.available(this)) {
+                PathfinderManager.walkTo(this,stand.getX()+.5,stand.getY(),stand.getZ()+.5,true);
+                rafflePathTicket=ticket.getEntityId();
+            }
+            raffleRepathAt=now+750;
+        }
+    }
+
+    private void handleRaffleDeposit(long now) {
+        releaseEventApproach();currentState=State.RAFFLE_RETURNING;
+        BlockPos box=null;Vec3 visible=null;
+        for(BlockPos candidate:raffle.boxes(now)) {
+            Vec3 point=eggVisiblePoint(candidate);
+            if(point!=null) {box=candidate;visible=point;break;}
+        }
+        if(box==null && !raffle.boxes(now).isEmpty())box=raffle.boxes(now).get(0);
+        if(box==null) {putAwayRaffleTickets();approachEventMid();return;}
+        double distance=mc.thePlayer.getDistance(box.getX()+.5,box.getY()+.5,box.getZ()+.5);
+        if(distance<=5 && visible!=null && (mc.thePlayer.getPositionEyes(1.0F).distanceTo(visible)<=mc.playerController.getBlockReachDistance()
+                || eggForwardClear(visible.xCoord,visible.zCoord))) {
+            if(PathfinderManager.hasDestination() || AutoWalker.INSTANCE.isActive())PathfinderManager.clear(this,true);
+            double dx=visible.xCoord-mc.thePlayer.posX, dz=visible.zCoord-mc.thePlayer.posZ;
+            double dy=visible.yCoord-(mc.thePlayer.posY+mc.thePlayer.getEyeHeight());
+            float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
+            float pitch=(float)-Math.toDegrees(Math.atan2(dy,Math.hypot(dx,dz)));
+            RotationManager.getInstance().setTargetRotation(RAFFLE_ROTATION_OWNER,RotationManager.PRIORITY_MACRO,
+                    yaw,pitch,(float)interactAimSpeed.value,true);
+            boolean inReach=mc.thePlayer.getPositionEyes(1.0F).distanceTo(visible)<=mc.playerController.getBlockReachDistance();
+            boolean aligned=Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(yaw-mc.thePlayer.rotationYaw))<30;
+            com.nezurstandalone.control.MovementKeys.set(RAFFLE_MOVEMENT_OWNER,mc.gameSettings.keyBindForward.getKeyCode(),
+                    !inReach && aligned && eggForwardClear(visible.xCoord,visible.zCoord));
+            currentState=State.RAFFLE_DEPOSITING;
+            if(!selectRaffleTickets())return;
+            final BlockPos selectedBox=box;
+            if(inReach && raffleClickRate.ready())GuardedInput.useBlock(raffleInputOwner,selectedBox,
+                    () -> isToggled() && isAutoRaffleActive() && currentState==State.RAFFLE_DEPOSITING
+                        && correctionTick<0 && !isAutoHealBusy() && PathfinderManager.available(this)
+                        && com.nezurstandalone.control.InventoryOwner.owns(this) && RaffleController.isTicket(mc.thePlayer.getHeldItem())
+                        && raffle.isBox(selectedBox) && mc.objectMouseOver!=null && mc.objectMouseOver.hitVec!=null
+                        && mc.thePlayer.getPositionEyes(1.0F).distanceTo(mc.objectMouseOver.hitVec)<=mc.playerController.getBlockReachDistance(),
+                    raffleClickRate::consume);
+            return;
+        }
+        putAwayRaffleTickets();
+        BlockPos stand=raffle.boxStand(box);
+        if(stand!=null && now>=raffleRepathAt && (!PathfinderManager.isNavigatingTo(stand)
+                || PathfinderManager.getState()==PathfinderManager.State.FAILED
+                || PathfinderManager.getState()==PathfinderManager.State.COMPLETED
+                || PathfinderManager.getState()==PathfinderManager.State.CANCELLED)) {
+            PathfinderManager.walkTo(this,stand.getX()+.5,stand.getY(),stand.getZ()+.5,true);raffleRepathAt=now+1000;
+        }
+    }
+
+    private boolean selectRaffleTickets() {
+        if(raffleInventoryPending) {
+            if(!com.nezurstandalone.input.WindowActions.ready(raffleInputOwner))return false;
+            com.nezurstandalone.control.GuiLease.release(raffleInputOwner);raffleInventoryPending=false;
+        }
+        int slot=raffle.ticketSlot(true);
+        if(slot>=0) {
+            if(!com.nezurstandalone.control.InventoryOwner.select(this,slot))return false;
+            raffleSlotOwned=true;return true;
+        }
+        int source=raffle.ticketSlot(false);
+        if(source<0 || mc.thePlayer.inventory.getItemStack()!=null)return false;
+        int destination=-1;float lowest=Float.MAX_VALUE;
+        for(int i=8;i>=0;i--)if(i!=mc.thePlayer.inventory.currentItem) {
+            ItemStack stack=mc.thePlayer.inventory.getStackInSlot(i);
+            if(stack==null) {destination=i;break;}
+            float score=getWeaponScore(stack);
+            if(score<lowest) {lowest=score;destination=i;}
+        }
+        if(destination<0 || !com.nezurstandalone.control.GuiLease.acquire(raffleInputOwner))return false;
+        if(!com.nezurstandalone.control.InventoryOwner.acquire(this)) {com.nezurstandalone.control.GuiLease.release(raffleInputOwner);return false;}
+        raffleSlotOwned=true;
+        com.nezurstandalone.input.WindowActions.click(raffleInputOwner,mc.thePlayer.inventoryContainer.windowId,source,destination,2);
+        raffleInventoryPending=true;return false;
+    }
+
     // ---- Spire --------------------------------------------------------------
     /** States that own the tick and must not be overwritten by Spire detection mid-flow. */
     private boolean isBusyFlow() {
@@ -1582,26 +1957,24 @@ public class GrinderEngine extends Module implements DraggableHud {
         // Track the event, but never seize currentState away from an active perk/prestige/mystic
         // or lobby flow - doing so used to abort a perk purchase the instant Spire started.
         boolean canSetState = !isBusyFlow();
-        boolean onBoard = false;
-        for (String line : Utils.getScoreboardLines()) {
-            String u = line.toUpperCase();
-            if (u.contains("EVENT:") && u.contains("SPIRE")) { onBoard = true; break; }
-        }
-        String boss = BossStatus.bossName != null ? StringUtils.stripControlCodes(BossStatus.bossName).toUpperCase() : "";
-        Matcher m = SPIRE_TIME.matcher(boss);
-        int secs = -1;
-        if (m.find()) secs = Integer.parseInt(m.group(1)) * 60 + Integer.parseInt(m.group(2));
+        boolean onBoard = SpireEntryPolicy.active(Utils.getScoreboardLines());
+        boolean inside=SpireEntryPolicy.inside(Utils.getScoreboardTitle(),Utils.getScoreboardLines());
+        int secs=SpireEntryPolicy.startSeconds(BossStatus.bossName,BossStatus.statusBarTime);
 
-        if (boss.contains("SPIRE! STARTING IN")) {
+        // Expired boss text must not override a live event sidebar or trap us in pre-start wait.
+        if (!inside && !onBoard && secs>=0) {
             spireActive = true;
             spireEndStamp = com.nezurstandalone.control.Clock.millis();
             if (canSetState) currentState = secs > 50 ? State.SPIRE_WAITING_SPAWN
                     : (secs >= 0 ? State.SPIRE_WALK_TO_MID : currentState);
-        } else if (onBoard) {
+        } else if (onBoard || inside) {
             spireActive = true;
             spireEndStamp = com.nezurstandalone.control.Clock.millis();
             if (spireActiveStartTime == 0) spireActiveStartTime = com.nezurstandalone.control.Clock.millis();
-            if (canSetState) currentState = State.SPIRE_FIGHTING;
+            if (canSetState) {
+                if(inside && currentState!=State.SPIRE_FIGHTING){releaseEventApproach();releaseSpawnWalk(true);PathfinderManager.clear(this,true);}
+                currentState = inside?State.SPIRE_FIGHTING:State.SPIRE_WALK_TO_MID;
+            }
         } else if (spireActive) {
             long dur = spireActiveStartTime != 0 ? com.nezurstandalone.control.Clock.millis() - spireActiveStartTime : 0;
             if (dur > 310000L || (spireActiveStartTime == 0 && com.nezurstandalone.control.Clock.millis() - spireEndStamp > 10000L)
@@ -1626,6 +1999,8 @@ public class GrinderEngine extends Module implements DraggableHud {
     private boolean isSpireActive() { return spireMode.isEnabled() && spireActive; }
 
     private void handleSpire() {
+        // Event combat must not inherit a paused work/break shift from ordinary grinding.
+        isOnBreak=false;
         if (currentState == State.SPIRE_WAITING_SPAWN) {
             pauseGameplay(); PathfinderManager.clear(this, true); // CLEAR on entry and while waiting.
             String zone = PitMapManager.getZone(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
@@ -1637,8 +2012,9 @@ public class GrinderEngine extends Module implements DraggableHud {
             } else { releaseCombat(); PathfinderManager.clear(this, true); }
         } else if (currentState == State.SPIRE_WALK_TO_MID) {
             releaseCombat();
-            // REPLACE with the normal navigation controller; no second jump/key policy.
-            navigateToMid();
+            // A late arrival must still leave spawn and reach the entry at mid.
+            if(Utils.isInSpawn())handleSpawn();
+            else {if(spawnWalkStart!=0L)releaseSpawnWalk(true);approachEventMid(1.0);}
         } else if (currentState == State.SPIRE_FIGHTING) {
             long now = com.nezurstandalone.control.Clock.millis();
             // Spire: fight everyone in reach regardless of zone.
@@ -1670,7 +2046,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             if (now - lowMidStamp > 8000L) {
                 lowMidTracking = false; squadSwapForced = true;
                 if (!inSpawn && now - oofCooldown > 3000L && now >= throttleCooldownEnd) {
-                    if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/oof")) return; oofCooldown = now;
+                    if (!sendRecoveryOof()) return; oofCooldown = now;
                 }
                 enterLobbySwap();
                 return;
@@ -1703,7 +2079,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private boolean isAnyEventActive() {
-        return isSpireActive() || isSquadsEventActive() || isRagePitEventActive()
+        return isAutoRaffleActive() || isAutoRobberyActive() || isAutoBlockheadActive() || isSpireActive() || isSquadsEventActive() || isRagePitEventActive()
                 || CombatAura.isTdmEventActive()
                 || (dragonEggSupport.isEnabled() && currentEgg != null)
                 || nightQuestActive;
@@ -1852,6 +2228,19 @@ public class GrinderEngine extends Module implements DraggableHud {
     private void handleDragonEgg() {
         BlockPos egg = currentEgg;
         if (egg == null) return;
+        String eggZone=PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
+        boolean inEggSpawn=Utils.isInSpawn() || "Spawn".equals(eggZone) || "Overspawn".equals(eggZone);
+        boolean inEggMid="Pit".equals(eggZone);
+        if(inEggSpawn) {
+            // The normal grinder already handles the spawn drop without building a route.
+            // Preserve its forward/sprint/jump cadence until we have actually left spawn.
+            com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
+            GuardedInput.cancel(interactionOwner);
+            pitClicker.reset(); GuardedInput.cancel(pitClickOwner);
+            RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
+            handleSpawn();
+            return;
+        }
         boolean entering = currentState != State.DRAGON_EGG || !egg.equals(lastEggPos);
         currentState = State.DRAGON_EGG;
         pitClicker.reset(); GuardedInput.cancel(pitClickOwner);
@@ -1860,23 +2249,58 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (entering) {
             // Discard the old chase/destination exactly once; isPathing alone includes combat.
             PathfinderManager.clear(this,true); GuardedInput.cancel(interactionOwner);
+            releaseSpawnWalk(true);
+            com.nezurstandalone.control.MovementKeys.release("grinder-npc");
+            com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
+            RotationManager.getInstance().clearTarget(MOVEMENT_ROTATION_OWNER);
             lastEggPos=egg; eggNavRepathAt=0; eggUnstuckAttempts=0;
+            eggUnstuckUntil=0; eggStationaryStart=now; eggApproachBestDistance=Double.MAX_VALUE;
         }
         double cx=egg.getX()+0.5,cy=egg.getY()+0.5,cz=egg.getZ()+0.5;
         double dist=mc.thePlayer.getDistance(cx,cy,cz);
         Vec3 vp=eggVisiblePoint(egg);
-        if(dist<=3.0 && vp!=null) {
+        // Take over the final approach before the old three-block stopping point. The walker
+        // must release its steering/keys first so aiming at the egg also drives us toward it.
+        // Mid is an open direct-walk area: never create an egg route there. Outside mid,
+        // retain pathfinding for the long approach and take over directly within reach.
+        boolean near = inEggMid || (dist<=4.0 && vp!=null);
+        boolean stopped = dist<=2.0;
+        boolean direct = near && (stopped || ((inEggMid || now>=eggUnstuckUntil) && eggForwardClear(cx,cz)));
+        if (direct && !stopped && !inEggMid) {
+            if (dist<eggApproachBestDistance-0.05) {
+                eggApproachBestDistance=dist; eggStationaryStart=now;
+            } else if (now-eggStationaryStart>=2000L) {
+                // A visible egg can still be separated by a ledge or obstruction. Let the
+                // walker choose another neighbour instead of pressing into it indefinitely.
+                direct=false; eggUnstuckUntil=now+1500L;
+                eggApproachBestDistance=Double.MAX_VALUE; eggStationaryStart=now;
+            }
+        }
+        if(direct) {
             if(PathfinderManager.isPathing())PathfinderManager.clear(this,true);
-            double dx=vp.xCoord-mc.thePlayer.posX;
-            double dy=vp.yCoord-(mc.thePlayer.posY+mc.thePlayer.getEyeHeight());
-            double dz=vp.zCoord-mc.thePlayer.posZ;
+            Vec3 aim=vp!=null?vp:new Vec3(cx,cy,cz);
+            double dx=aim.xCoord-mc.thePlayer.posX;
+            double dy=aim.yCoord-(mc.thePlayer.posY+mc.thePlayer.getEyeHeight());
+            double dz=aim.zCoord-mc.thePlayer.posZ;
             float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
             float pitch=(float)-Math.toDegrees(Math.atan2(dy,Math.sqrt(dx*dx+dz*dz)));
             RotationManager.getInstance().setTargetRotation(INTERACTION_ROTATION_OWNER,
-                    RotationManager.PRIORITY_COMBAT,yaw,pitch,(float)interactAimSpeed.value,true);
-            legitClickBlock(egg); return;
+                    RotationManager.PRIORITY_MACRO,yaw,pitch,(float)interactAimSpeed.value,true);
+            float yawError=Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(yaw-mc.thePlayer.rotationYaw));
+            com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER,
+                    mc.gameSettings.keyBindForward.getKeyCode(),!stopped && yawError<=30.0F);
+            eggApproachSpeed(!stopped && yawError<=30.0F,dist);
+            if(vp!=null)legitClickBlock(egg);
+            else GuardedInput.cancel(interactionOwner);
+            return;
         }
+        com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
+        GuardedInput.cancel(interactionOwner);
         RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
+        if(inEggMid) {
+            PathfinderManager.clear(this,true);
+            return;
+        }
         // Preserve an active approach (including a no-line-of-sight sidestep) instead of stopping
         // it each tick. Failed/completed routes choose another walkable neighbour, never the egg.
         if(now>=eggNavRepathAt && (!PathfinderManager.isPathing()
@@ -1886,6 +2310,26 @@ public class GrinderEngine extends Module implements DraggableHud {
             eggNavRepathAt=now+1000L;
             if(stand!=null)PathfinderManager.walkTo(this,stand.getX()+0.5,stand.getY(),stand.getZ()+0.5,true);
         }
+        eggApproachSpeed(AutoWalker.INSTANCE.isActive(),dist);
+    }
+
+    private void eggApproachSpeed(boolean moving,double distance) {
+        boolean fast=moving && distance>3.0;
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER,mc.gameSettings.keyBindSprint.getKeyCode(),fast);
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER,mc.gameSettings.keyBindJump.getKeyCode(),fast);
+    }
+
+    /** Probe the next walking step, including floor support; visibility alone is not a route. */
+    private boolean eggForwardClear(double x,double z) {
+        double dx=x-mc.thePlayer.posX,dz=z-mc.thePlayer.posZ;
+        double length=Math.sqrt(dx*dx+dz*dz);
+        if(length<0.001)return false;
+        net.minecraft.util.AxisAlignedBB step=mc.thePlayer.getEntityBoundingBox()
+                .offset(dx/length*0.45,0,dz/length*0.45);
+        if(!mc.theWorld.getCollidingBoundingBoxes(mc.thePlayer,step).isEmpty())return false;
+        net.minecraft.util.AxisAlignedBB floor=new net.minecraft.util.AxisAlignedBB(
+                step.minX,step.minY-0.6,step.minZ,step.maxX,step.minY,step.maxZ);
+        return !mc.theWorld.getCollidingBoundingBoxes(mc.thePlayer,floor).isEmpty();
     }
 
     private BlockPos eggApproachSpot(BlockPos egg) {
@@ -1908,12 +2352,14 @@ public class GrinderEngine extends Module implements DraggableHud {
     /** Crosshair-validated, not-mid-dig, rate-limited right-click on a block. ChestAura's gate. */
     private void legitClickBlock(BlockPos pos) {
         if (!eggClickRate.ready()) return;
-        MovingObjectPosition look = mc.objectMouseOver;
-        if (look == null || look.typeOfHit != MovingObjectPosition.MovingObjectType.BLOCK) return;
-        if (!look.getBlockPos().equals(pos)) return;
         if (mc.playerController.getIsHittingBlock()) return;
+        // GuardedInput checks the fresh native raycast after the camera update. Checking the
+        // previous tick's objectMouseOver here lost clicks while turning during the approach.
         GuardedInput.useBlock(interactionOwner, pos, () -> isToggled() && !isAutoHealBusy()
-                && pos.equals(currentEgg) && mc.theWorld.getBlockState(pos).getBlock() == Blocks.dragon_egg, eggClickRate::consume);
+                && dragonEggSupport.isEnabled() && currentState==State.DRAGON_EGG
+                && PathfinderManager.available(this) && pos.equals(currentEgg)
+                && mc.theWorld.isBlockLoaded(pos)
+                && mc.theWorld.getBlockState(pos).getBlock() == Blocks.dragon_egg, eggClickRate::consume);
     }
 
     /** First raytraced point on the block visible from the eyes, or null. */
@@ -3048,6 +3494,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     public void onChat(ClientChatReceivedEvent event) {
         if (!isToggled() || mc.thePlayer == null || engineWorld != mc.theWorld || enginePlayer != mc.thePlayer) return;
         String msg = StringUtils.stripControlCodes(event.message.getUnformattedText());
+        if (event.type == 0 && autoBlockhead.isEnabled()) blockhead.chat(msg,com.nezurstandalone.control.Clock.millis());
 
         if (event.type == 0 && isMysticDropMessage(msg)) {
             com.nezurstandalone.control.GrinderDiagnostics.record("MYSTIC_CHAT",
@@ -3335,6 +3782,12 @@ public class GrinderEngine extends Module implements DraggableHud {
         switch (s) {
             case DRAGON_EGG: return PURPLE;
             case FIGHTING: case SPIRE_FIGHTING: return GREEN;
+            case BLOCKHEAD_FIGHTING: return GREEN;
+            case BLOCKHEAD_AVOIDING: return AMBER;
+            case ROBBERY_FIGHTING: return GREEN;
+            case ROBBERY_RETREATING: case ROBBERY_BANKED: return AMBER;
+            case BLOCKHEAD_PAINTING: case BLOCKHEAD_POWERUP: return CYAN;
+            case RAFFLE_TO_MID: case RAFFLE_COLLECTING: case RAFFLE_RETURNING: case RAFFLE_DEPOSITING: return CYAN;
             case LOBBY_SWAP: case LIMBO: case LOBBY_RECONNECT: case JOINING_PIT: return AMBER;
             case PERK_NAVIGATING: case PERK_INTERACTING: case PERK_CLICKING_GUI:
             case PRESTIGE_NAVIGATING: case PRESTIGE_INTERACTING: case PRESTIGE_CLICKING_GUI: return PURPLE;
@@ -3358,6 +3811,17 @@ public class GrinderEngine extends Module implements DraggableHud {
             case SPIRE_WAITING_SPAWN: return "Spire Wait";
             case SPIRE_WALK_TO_MID: return "Spire Rush";
             case SPIRE_FIGHTING: return "Spire Fight";
+            case BLOCKHEAD_PAINTING: return "Blockhead Paint";
+            case BLOCKHEAD_POWERUP: return "Blockhead Powerup";
+            case BLOCKHEAD_FIGHTING: return "Blockhead Fight";
+            case BLOCKHEAD_AVOIDING: return "Blockhead Avoid";
+            case ROBBERY_FIGHTING: return "Robbery Hunt";
+            case ROBBERY_RETREATING: return "Robbery Return";
+            case ROBBERY_BANKED: return "Robbery Top 20 Hold";
+            case RAFFLE_TO_MID: return "Raffle Entry";
+            case RAFFLE_COLLECTING: return "Raffle Tickets "+(mc.thePlayer==null?0:raffle.tickets())+"/9";
+            case RAFFLE_RETURNING: return "Raffle Return";
+            case RAFFLE_DEPOSITING: return "Raffle Deposit";
             case PERK_NAVIGATING: case PERK_INTERACTING: case PERK_CLICKING_GUI: return "Perk Shop";
             case PRESTIGE_NAVIGATING: case PRESTIGE_INTERACTING: case PRESTIGE_CLICKING_GUI: return "Prestige";
             default: return s.name();
@@ -3365,6 +3829,9 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private String activeEventName() {
+        if (isAutoRaffleActive()) return "Raffle";
+        if (isAutoBlockheadActive()) return "Blockhead";
+        if (isAutoRobberyActive()) return "Robbery";
         if (hasDragonEggPriority()) return "Dragon Egg";
         if (isSpireActive()) return "Spire";
         if (isSquadsEventActive()) return "Squads";
@@ -3375,6 +3842,9 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private int activeEventColor() {
+        if (isAutoRaffleActive()) return CYAN;
+        if (isAutoBlockheadActive()) return CYAN;
+        if (isAutoRobberyActive()) return AMBER;
         if (isSpireActive()) return PURPLE;
         if (isSquadsEventActive()) return AMBER;
         if (isRagePitEventActive()) return GuiTheme.DANGER;

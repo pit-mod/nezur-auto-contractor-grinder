@@ -448,6 +448,9 @@ public final class AutoWalker {
             if (driveCombatChase()) return;
         }
 
+        if (suicideMode && com.nezurstandalone.engine.GrinderEngine.isAutoRaffleActive()) {
+            PathfinderManager.fail();return;
+        }
         if (suicideMode) {
             resetKeys();
             if (com.nezurstandalone.utils.PitMapManager.isInSpawn(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) {
@@ -1046,6 +1049,9 @@ public final class AutoWalker {
         if (stuckTicks > 40) {
             recoveryAttempts++;
             if (recoveryAttempts >= (int) com.nezurstandalone.pathfinder.PathfinderConfig.stuckGiveUp.value) { // failed escalations -> last resort
+                if (com.nezurstandalone.engine.GrinderEngine.isAutoRaffleActive()) {
+                    PathfinderManager.fail();return;
+                }
                 suicideMode = true;
                 suicideTimer = 100;
                 suicideAttempts = 0;

@@ -129,6 +129,8 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private ContainerChest observedContainer;
     private String observedMenu="", observedContents="";
     private boolean pendingClick;
+    private boolean pendingQuestClick;
+    private final java.util.Set<String> questsIssuedThisVisit=new java.util.HashSet<String>();
     private ContainerChest pendingContainer;
     private String pendingContents;
     private long pendingSince;
@@ -248,7 +250,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         rejectedContractorNpcs.clear();rejectedShopNpcs.clear();lastInteractedNpc=null;
         infoHud.resetEntrance();
         lastEquipmentMode=equipmentMode.getMode();equipmentPurchasePending=false;equipmentRetryAfter=0;
-        attempts=0;pendingClick=false;purchaseName=null;
+        attempts=0;pendingClick=false;pendingQuestClick=false;questsIssuedThisVisit.clear();purchaseName=null;
         contractStartedChat=false;
         contractTracker.clear();inspectingActiveIdentity=false;noOfferRetryAt=0;ironPackPurchased=false;
         connection.reset();disconnectedScreen=null;reconnectAttempts=0;thinLobbySince=0;
@@ -338,8 +340,8 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         com.nezurstandalone.control.MovementKeys.release("contractor-approach");
         com.nezurstandalone.control.MovementKeys.release("contractor-gapple");
         long now=com.nezurstandalone.control.Clock.millis();
-        if(mc.theWorld!=null && mc.thePlayer!=null && waitForMajorEvent(now))return;
         if(handleConnection(now))return;
+        if(mc.theWorld!=null && mc.thePlayer!=null && waitForMajorEvent(now))return;
         if(mc.theWorld==null || mc.thePlayer==null) {
             boolean swapping=state==State.LOBBY_SWITCHING;
             if(swapping)lobbySawNonPit=true;
@@ -617,6 +619,18 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     }
 
     private long nextReturnToSpawn;
+    /** NPC travel and menus own interaction; unrelated chests must not steal their aim/clicks. */
+    public boolean ownsNpcInteraction() {
+        if(!isToggled())return false;
+        switch(state) {
+            case FINDING_CONTRACTOR: case MOVING_TO_CONTRACTOR: case OPENING_CONTRACTOR:
+            case READING_MENU: case WAITING_FOR_STABLE_OFFERS: case VERIFYING_ACCEPTANCE:
+            case FINDING_SHOP: case MOVING_TO_SHOP: case OPENING_SHOP: case BUYING_SHOP:
+                return true;
+            default: return false;
+        }
+    }
+
     private void navigateToContractor(long now) {
         if(scoreboard!=null && scoreboard.active && !inspectingActiveIdentity) {
             closeOwnedMenu();cleanupNavigation();
@@ -657,7 +671,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     }
 
     private void openContractor(long now) {
-        if(mc.currentScreen instanceof GuiChest) {move(State.READING_MENU);return;}
+        if(mc.currentScreen instanceof GuiChest) {questsIssuedThisVisit.clear();pendingQuestClick=false;move(State.READING_MENU);return;}
         if(mc.currentScreen!=null)return;
         npc=findNpc();
         if(npc==null || mc.thePlayer.getDistanceToEntity(npc)>0.8) {move(State.FINDING_CONTRACTOR);return;}
@@ -687,7 +701,12 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         String title=StringUtils.stripControlCodes(inv.getDisplayName().getUnformattedText());
         String contents=signature(inv);
         if(pendingClick) {
-            if(container==pendingContainer && contents.equals(pendingContents)) {
+            // Starting a quest is an in-place action: some server menus only send chat
+            // confirmation, leaving the inventory unchanged. Do not close/reopen it.
+            if(pendingQuestClick){
+                if(now<nextAction)return;
+                pendingQuestClick=false;
+            }else if(container==pendingContainer && contents.equals(pendingContents)) {
                 if(now-pendingSince>4000)recover("Menu click had no observed transition.");
                 return;
             }
@@ -705,7 +724,10 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                 ItemStack quest=inv.getStackInSlot(questSlot);
                 if(quest!=null && ContractOffer.shouldStartQuest(quest.getDisplayName(),lore(quest),
                         autoDailyQuests.enabled,autoWeeklyQuests.enabled)){
-                    click(container,questSlot,now);return;
+                    String questKey=StringUtils.stripControlCodes(quest.getDisplayName()).trim().toLowerCase(java.util.Locale.ROOT);
+                    if(questsIssuedThisVisit.contains(questKey))continue;
+                    if(click(container,questSlot,now)){questsIssuedThisVisit.add(questKey);pendingQuestClick=true;}
+                    return;
                 }
             }
             int noviceLimit=find(inv,"Novice Contract"), bigLimit=find(inv,"Big Time Contract");
@@ -813,16 +835,17 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         }
     }
 
-    private void click(ContainerChest container,int slot,long now) {
-        if(!com.nezurstandalone.control.GuiLease.acquire(this))return;
-        if(container!=mc.thePlayer.openContainer || slot<0 || slot>=container.getLowerChestInventory().getSizeInventory())return;
+    private boolean click(ContainerChest container,int slot,long now) {
+        if(!com.nezurstandalone.control.GuiLease.acquire(this))return false;
+        if(container!=mc.thePlayer.openContainer || slot<0 || slot>=container.getLowerChestInventory().getSizeInventory())return false;
         ItemStack stack=container.getLowerChestInventory().getStackInSlot(slot);
-        if(stack==null)return;
+        if(stack==null)return false;
         mc.playerController.windowClick(container.windowId,slot,0,0,mc.thePlayer);
-        pendingClick=true;pendingContainer=container;pendingContents=signature(container.getLowerChestInventory());pendingSince=now;
+        pendingClick=true;pendingQuestClick=false;pendingContainer=container;pendingContents=signature(container.getLowerChestInventory());pendingSince=now;
         nextAction=now+500;
         observedContents="";
         log("Clicked "+StringUtils.stripControlCodes(stack.getDisplayName())+" in "+observedMenu);
+        return true;
     }
 
     private List<ContractOffer> offers(IInventory inv) {
@@ -1688,7 +1711,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     }
     private boolean handleConnection(long now) {
         net.minecraft.client.multiplayer.ServerData server=mc.getCurrentServerData();
-        if(server!=null)lastHypixelAddress=com.nezurstandalone.contract.ContractConnectionFlow.hypixelHost(server.serverIP)?server.serverIP:null;
+        if(server!=null)lastHypixelAddress=com.nezurstandalone.utils.PitLocationTracker.supportedHost(server.serverIP)?server.serverIP:null;
         if(mc.currentScreen instanceof net.minecraft.client.gui.GuiDisconnected) {
             if(!autoReconnect.enabled || lastHypixelAddress==null)return false;
             if(disconnectedScreen!=mc.currentScreen) {
@@ -1706,7 +1729,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                 reconnectAttempts++;connection.sent(now);
                 mc.displayGuiScreen(new net.minecraft.client.multiplayer.GuiConnecting(
                         new net.minecraft.client.gui.GuiMainMenu(),mc,
-                        new net.minecraft.client.multiplayer.ServerData("Hypixel",lastHypixelAddress,false)));
+                        new net.minecraft.client.multiplayer.ServerData("Pit",lastHypixelAddress,false)));
             }
             return true;
         }
@@ -1714,17 +1737,15 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             connection.observe(com.nezurstandalone.contract.ContractConnectionFlow.Location.UNKNOWN,now,0);
             return false;
         }
-        if(!Utils.onHypixel()) {
+        if(mc.isSingleplayer()||server==null||!com.nezurstandalone.utils.PitLocationTracker.supportedHost(server.serverIP)) {
             connection.observe(com.nezurstandalone.contract.ContractConnectionFlow.Location.UNKNOWN,now,0);
             return false;
         }
         String title=Utils.getScoreboardTitle().trim();
         boolean inPit=title.equalsIgnoreCase("THE HYPIXEL PIT");
-        boolean inLimbo=title.equalsIgnoreCase("LIMBO");
-        boolean inLobby=title.equalsIgnoreCase("HYPIXEL") || Utils.isInLobby();
-        com.nezurstandalone.contract.ContractConnectionFlow.Location location=inPit?com.nezurstandalone.contract.ContractConnectionFlow.Location.PIT:
-                inLimbo?com.nezurstandalone.contract.ContractConnectionFlow.Location.LIMBO:
-                inLobby?com.nezurstandalone.contract.ContractConnectionFlow.Location.LOBBY:com.nezurstandalone.contract.ContractConnectionFlow.Location.UNKNOWN;
+        com.nezurstandalone.contract.ContractConnectionFlow.Location location=com.nezurstandalone.utils.PitSessionLocation.current();
+        boolean inLimbo=location==com.nezurstandalone.contract.ContractConnectionFlow.Location.LIMBO;
+        boolean inLobby=location==com.nezurstandalone.contract.ContractConnectionFlow.Location.LOBBY;
         connection.observe(location,now,(long)(lobbySwapDelay.value*1000));
         if(inPit) {
             reconnectAttempts=0;disconnectedScreen=null;

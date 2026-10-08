@@ -11,6 +11,19 @@
 # YOU SHOULD NOT GET BANNED BY ANTICHEAT, BUT STAFF WILL BAN YOU, USE AT OWN RISK
 A standalone **Minecraft Forge 1.8.9** mod with AutoContractor and AutoGrinder.
 
+## Source update — 1.5.2
+
+The source now includes the latest premium AutoGrinder and AutoContractor improvements:
+
+- Auto Blockhead, Auto Robbery and Auto Raffle settings in AutoGrinder (off by default).
+- Improved Spire entry, dragon-egg approach and nearby target selection.
+- Daily/weekly quest clicks continue through menus that only confirm in chat.
+- Reconnect to the last supported Pit server, with lobby/Limbo recovery and transfer grace.
+- Physical mouse movement takes camera priority over automation.
+
+The free gold-contract recovery, sneak-hit cadence and Vile-only fallback are preserved.
+Build from source below to use 1.5.2; the download instructions refer to the existing 1.5.1 release.
+
 ## Startup crash hotfix — 1.5.1
 
 If 1.5 crashes with `IMixinService` missing, **replace the old JAR with 1.5.1**.
@@ -51,11 +64,11 @@ Linux/macOS:
 ./gradlew clean build verifyStandalone
 ```
 
-The build uses Gradle 4.4.1 and ForgeGradle 2.1. Output: `build/libs/Nezur-AutoContractor-Grinder-1.5.1.jar`. Mixin is bundled; the original Nezur source checkout is not required.
+The build uses Gradle 4.4.1 and ForgeGradle 2.1. Output: `build/libs/Nezur-AutoContractor-Grinder-1.5.2.jar`. Mixin is bundled; the original Nezur source checkout is not required.
 
 ## Verification
 
-Compilation, retained module initialization, headless GUI/config checks, contract regressions and isolated bundled-Mixin startup checks passed. The 1.5.1 hotfix was also checked through the production Forge 1.8.9 startup pipeline with only Nezur in mods; all five Mixin target classes loaded and the Minecraft input hook was confirmed applied. The smoke test stops before starting the graphical client and does not prove live gameplay or anti-cheat safety.
+Compilation, retained module initialization, headless GUI/config checks, contract, event, ticket-progress, reconnect-location and camera-priority regressions passed. Gold-collection and sneak-policy checks passed. The 1.5.2 build was checked through the production Forge 1.8.9 startup pipeline with only Nezur in mods; all six Mixin target classes loaded and the Minecraft input and camera hooks were confirmed applied. The smoke test stops before starting the graphical client and does not prove live gameplay or anti-cheat safety.
 
 ## Premium Nezur
 
