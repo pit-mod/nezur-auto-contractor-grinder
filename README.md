@@ -37,10 +37,6 @@ Use this standalone mod instead of loading it alongside the full Nezur Client. U
 
 KOS/Players List and Guilds are not included. Focus works without KOS.
 
-## Configs
-
-The Nezur config GUI supports saving/loading presets, sharing/importing **`Nezur-`** codes, module settings and HUD positions. Open **Right Shift → Configs**. Local files are stored in **`config/nezur-acg/`**, separately from the full client. Private API/config files are never part of this repository.
-
 ## Build from source
 
 Requires a **JDK 8** installation; set `JAVA_HOME` to its directory.
