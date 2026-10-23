@@ -16,9 +16,19 @@ import java.util.Random;
 public class AutoHeal extends Module {
 
     private static AutoHeal instance;
-    public static void interrupt() { if (instance != null) instance.abortHeal(); }
+    public static void interrupt() {
+        if(instance==null)return;
+        if(instance.useAttempts>0 && instance.healingSlot>=0 && instance.mc.thePlayer==instance.healingPlayer
+                && instance.mc.theWorld==instance.healingWorld
+                && !com.nezurstandalone.input.InventoryEvidence.consumed(instance.healingSlot,instance.evidenceRevision,instance.selectedHeal)){
+            instance.markUncertain();instance.traceHeal("INTERRUPTED_UNCONFIRMED");
+        }
+        instance.abortHeal();
+    }
+    public static String diagnosticState(){return instance==null?"none":instance.state+" attempts="+instance.useAttempts+" uncertainSlot="+instance.uncertainSlot;}
     private int useAttempts;
     private long queueDeadline;
+    private long healDeadline;
     private long lastDropTrace;
     private boolean observedUse;
     private com.nezurstandalone.control.HealTransaction transaction;
@@ -58,12 +68,51 @@ public class AutoHeal extends Module {
     private Object healingWorld;
     private net.minecraft.entity.player.EntityPlayer healingPlayer;
     private ItemStack selectedHeal;
+    private int uncertainSlot=-1;
+    private ItemStack uncertainItem;
+    private ItemStack uncertainLocal;
+    private long uncertainRevision;
+    private Object uncertainWorld,uncertainPlayer;
+
+    private void clearUncertain(){uncertainSlot=-1;uncertainItem=uncertainLocal=null;uncertainWorld=uncertainPlayer=null;}
+    private void markUncertain(){
+        uncertainSlot=healingSlot;uncertainItem=ItemStack.copyItemStack(selectedHeal);uncertainRevision=evidenceRevision;
+        uncertainLocal=ItemStack.copyItemStack(mc.thePlayer.inventory.getStackInSlot(healingSlot));
+        uncertainWorld=mc.theWorld;uncertainPlayer=mc.thePlayer;
+    }
+    private boolean usableSlot(int slot){
+        if(uncertainWorld!=mc.theWorld || uncertainPlayer!=mc.thePlayer)clearUncertain();
+        if(slot!=uncertainSlot)return true;
+        if(!ItemStack.areItemStacksEqual(uncertainLocal,mc.thePlayer.inventory.getStackInSlot(slot))
+                || com.nezurstandalone.input.InventoryEvidence.consumed(slot,uncertainRevision,uncertainItem)){
+            clearUncertain();return true;
+        }
+        return false;
+    }
+
+    private boolean ownsHeal() {
+        return isToggled() && com.nezurstandalone.control.InventoryOwner.owns(this) && leaseGeneration==com.nezurstandalone.control.InventoryOwner.generation() && mc.thePlayer == healingPlayer
+                && mc.theWorld == healingWorld && mc.thePlayer != null && mc.currentScreen == null
+                && !mc.thePlayer.isDead && mc.thePlayer.getHealth() > 0
+                && mc.thePlayer.openContainer == mc.thePlayer.inventoryContainer
+                && mc.thePlayer.inventory.currentItem == healingSlot;
+    }
 
     private boolean mayUseHeal() {
-        return isToggled() && state == State.USE && com.nezurstandalone.control.InventoryOwner.owns(this) && leaseGeneration==com.nezurstandalone.control.InventoryOwner.generation() && mc.thePlayer == healingPlayer
-                && mc.theWorld == healingWorld && mc.thePlayer != null && mc.currentScreen == null
-                && mc.thePlayer.inventory.currentItem == healingSlot
+        return state == State.USE && ownsHeal()
+                && !skullBlockedByAbsorption()
                 && ItemStack.areItemStacksEqual(selectedHeal, mc.thePlayer.getHeldItem());
+    }
+
+    private boolean skullBlockedByAbsorption() {
+        return skullNoAbsorption.enabled && selectedHeal != null
+                && selectedHeal.getItem() instanceof ItemSkull
+                && mc.thePlayer != null && mc.thePlayer.getAbsorptionAmount() > 0;
+    }
+
+    /** Retain the held attack handoff until use/result cleanup, even if combat loses its target. */
+    private boolean mayPrioritizeHeal() {
+        return (state == State.USE || state == State.HOLD || state == State.SWAP_BACK) && ownsHeal();
     }
 
     private enum State {
@@ -82,7 +131,9 @@ public class AutoHeal extends Module {
     public AutoHeal() {
         super("AutoHeal", "Uses hotbar heals with human-like delays.", Category.AUTO);
         instance = this;
-        com.nezurstandalone.control.SessionResets.register(this,()->{resetState();lastHealTime=lastSteakTime=lastSkullConsumptionTime=0;});
+        com.nezurstandalone.input.GuardedInput.label(inputOwner,"AutoHeal");
+        com.nezurstandalone.input.NativeActionGate.priorityItemUseAllowed=this::mayPrioritizeHeal;
+        com.nezurstandalone.control.SessionResets.register(this,()->{resetState();if(uncertainWorld!=mc.theWorld||uncertainPlayer!=mc.thePlayer)clearUncertain();lastHealTime=lastSteakTime=lastSkullConsumptionTime=0;});
         markDangerous();
         addSettings(skullHealth, soupHealth, steakHealth, eggHealth, potatoHealth, spireSoulHealth,
                 cooldownMs, reactionTimeMs, holdTimeMs, steakCooldownS,
@@ -98,6 +149,7 @@ public class AutoHeal extends Module {
     protected void onEnable() {
         super.onEnable();
         resetState();
+        clearUncertain();
         generateOffsets();
     }
 
@@ -116,6 +168,7 @@ public class AutoHeal extends Module {
         selectedHeal = null;
         state = State.IDLE;
         useAttempts = 0;
+        healDeadline = 0;
         observedUse = false;
         originalSlot = -1;
         healingSlot = -1;
@@ -184,6 +237,17 @@ public class AutoHeal extends Module {
         }
 
         long currentTime = com.nezurstandalone.control.Clock.millis();
+        // Absorption can arrive after selection/use and before the slot-consumption acknowledgement.
+        // Release immediately instead of retrying a head or waiting with it selected until hearts expire.
+        if (skullBlockedByAbsorption()) {
+            if (useAttempts > 0) lastSkullConsumptionTime=currentTime;
+            traceHeal("SKULL_ABSORPTION"); abortHeal(); return;
+        }
+        // One deadline covers dispatch starvation, sustained use and every retry.
+        if (healDeadline != 0 && currentTime >= healDeadline) {
+            if(useAttempts>0)markUncertain();
+            traceHeal("HEAL_TIMEOUT"); lastHealTime=currentTime; abortHeal(); return;
+        }
         float currentHealth = mc.thePlayer.getHealth();
 
         switch (state) {
@@ -227,6 +291,7 @@ public class AutoHeal extends Module {
                 if (originalSlot != mc.thePlayer.inventory.currentItem) { resetState(); return; }
                 if (!com.nezurstandalone.control.InventoryOwner.select(this, healingSlot)) { abortHeal(); return; }
                 leaseGeneration=com.nezurstandalone.control.InventoryOwner.generation();
+                healDeadline = currentTime + 5000L;
                 if (useAttempts == 0) evidenceRevision=com.nezurstandalone.input.InventoryEvidence.revision(healingSlot);
                 transaction.selected();
                 queueDeadline = currentTime + 1500L;
@@ -289,16 +354,14 @@ public class AutoHeal extends Module {
                         if(currentTime<stateTime)return;
                         if (selectedHeal.getItem() instanceof ItemSkull) lastSkullConsumptionTime=currentTime;
                         traceHeal("CONSUMED"); state=State.SWAP_BACK;
-                    } else if ((transaction.state()==com.nezurstandalone.control.HealTransaction.State.FAILED
-                            || transaction.state()==com.nezurstandalone.control.HealTransaction.State.INTERRUPTED)
-                            && !using && useAttempts < 3
-                            && ItemStack.areItemStacksEqual(selectedHeal,mc.thePlayer.inventory.getStackInSlot(healingSlot))) {
-                        // No consumption confirmed: all item types retry while retaining the same slot lease.
-                        // Preserve the first evidence revision so a late acknowledgement still completes us.
-                        transaction = new com.nezurstandalone.control.HealTransaction(com.nezurstandalone.control.ClientSession.current(), false);
-                        transaction.selected(); observedUse=false; queueDeadline=currentTime+1500L; state=State.USE;
-                        traceHeal("RETRY_UNCONFIRMED"); return;
-                    } else {traceHeal("FAILED");lastHealTime=currentTime;abortHeal();return;}
+                    } else {
+                        // C08 has no consumption acknowledgement. A timeout is not permission to
+                        // replay it against the next item in a stack when the server is delayed.
+                        markUncertain();
+                        traceHeal("UNCONFIRMED_NO_REPLAY");
+                        System.out.println("[Nezur] AutoHeal consumption unconfirmed for slot "+(healingSlot+1)+"; waiting for item change or module restart.");
+                        lastHealTime=currentTime;abortHeal();return;
+                    }
                 } else return;
 
             case SWAP_BACK:
@@ -380,7 +443,7 @@ public class AutoHeal extends Module {
     private int findItem(Class<?> clazz, String nameContains) {
         for (int i = 0; i < 9; i++) {
             ItemStack stack = mc.thePlayer.inventory.mainInventory[i];
-            if (stack != null && (clazz.isInstance(stack.getItem())
+            if (usableSlot(i) && stack != null && (clazz.isInstance(stack.getItem())
                     || stack.getDisplayName().toLowerCase().contains(nameContains))) {
                 return i;
             }
@@ -391,7 +454,7 @@ public class AutoHeal extends Module {
     private int findSkull() {
         for (int i = 0; i < 9; i++) {
             ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
-            if (stack != null && stack.hasDisplayName()) {
+            if (usableSlot(i) && stack != null && stack.hasDisplayName()) {
                 String name = stack.getDisplayName();
                 if (stack.getItem() instanceof ItemSkull && name.contains("\u00a76") && name.contains("Golden Head")) {
                     return i;
@@ -404,7 +467,7 @@ public class AutoHeal extends Module {
     private int findItemID(int id) {
         for (int i = 0; i < 9; i++) {
             ItemStack stack = mc.thePlayer.inventory.mainInventory[i];
-            if (stack != null && Item.getIdFromItem(stack.getItem()) == id) {
+            if (usableSlot(i) && stack != null && Item.getIdFromItem(stack.getItem()) == id) {
                 return i;
             }
         }
@@ -414,7 +477,7 @@ public class AutoHeal extends Module {
     private int findEgg() {
         for (int i = 0; i < 9; i++) {
             ItemStack stack = mc.thePlayer.inventory.mainInventory[i];
-            if (stack != null && Item.getIdFromItem(stack.getItem()) == 383 && stack.getItemDamage() == 96) {
+            if (usableSlot(i) && stack != null && Item.getIdFromItem(stack.getItem()) == 383 && stack.getItemDamage() == 96) {
                 return i;
             }
         }

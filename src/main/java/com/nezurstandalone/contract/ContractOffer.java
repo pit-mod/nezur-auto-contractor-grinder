@@ -70,6 +70,9 @@ public final class ContractOffer {
     public static boolean completedMessage(String text) {
         return strip(text).matches("(?i)^CONTRACT COMPLETED!(?:\\s.*)?$");
     }
+    public static boolean completedMessage(String text,boolean classic){
+        return completedMessage(text) || classic && strip(text).matches("(?i)^CONTRACT COMPLETE!(?:\\s.*)?$");
+    }
     public static int vileReward(String text) {
         Matcher reward=VILE.matcher(strip(text).replace('\u00a0',' '));
         return reward.find()?Integer.parseInt(reward.group(1)):0;

@@ -403,7 +403,8 @@ public final class AutoWalker {
         boolean hop=combatJumps && mc.currentScreen==null && mc.thePlayer.onGround
                 && !mc.thePlayer.isSneaking() && !mc.thePlayer.isInWater() && !mc.thePlayer.isInLava()
                 && !mc.thePlayer.isCollidedHorizontally && mc.thePlayer.canEntityBeSeen(combatTarget)
-                && "Pit".equals(com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ))
+                && ("Pit".equals(com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ))
+                    || com.nezurstandalone.engine.GrinderEngine.allowsCombatJump())
                 && ((policy.forward && mc.thePlayer.getDistanceToEntity(combatTarget)>combatReach+1
                         && Math.hypot(mc.thePlayer.motionX,mc.thePlayer.motionZ)>.15)
                     || (mc.thePlayer.getDistanceToEntity(combatTarget)<=combatReach

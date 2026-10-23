@@ -1,0 +1,1 @@
+package org.lwjgl.input;public class Mouse{public static boolean down,leftDown,rightDown;public static boolean isCreated(){return true;}public static boolean isButtonDown(int key){return down||key==0&&leftDown||key==1&&rightDown;}}

@@ -44,6 +44,7 @@ public final class GuardedWindowClick {
 
     private static boolean click(ContainerChest target, int slot, int mode) {
         refresh();
+
         if (!com.nezurstandalone.control.GuiLease.available(GuardedWindowClick.class)) return false;
         if (!contentsReceived || waiting || rejected || MC.thePlayer == null || MC.playerController == null
                 || MC.thePlayer.isDead || MC.thePlayer.isUsingItem()

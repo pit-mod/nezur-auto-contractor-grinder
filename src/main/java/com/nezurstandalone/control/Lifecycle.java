@@ -6,7 +6,7 @@ public final class Lifecycle {
     @SubscribeEvent public void tick(TickEvent.ClientTickEvent event) {
         if(event.phase!=TickEvent.Phase.START)return;
         long now=ClientSession.current();
-        if(token!=now){token=now;SessionResets.all();com.nezurstandalone.utils.NearestEggScan.allChunksChanged();net.minecraft.entity.boss.BossStatus.bossName=null;net.minecraft.entity.boss.BossStatus.statusBarTime=0;net.minecraft.entity.boss.BossStatus.healthScale=0;com.nezurstandalone.input.GuardedInput.clear();com.nezurstandalone.input.ClickSimulator.invalidate();com.nezurstandalone.utils.PitMapManager.reset();}
+        if(token!=now){token=now;SessionResets.all();com.nezurstandalone.utils.NearestEggScan.allChunksChanged();net.minecraft.entity.boss.BossStatus.bossName=null;net.minecraft.entity.boss.BossStatus.statusBarTime=0;net.minecraft.entity.boss.BossStatus.healthScale=0;com.nezurstandalone.input.GuardedInput.clear();com.nezurstandalone.input.ClickSimulator.invalidate();com.nezurstandalone.utils.PitMapManager.getCurrentMap();}
         InventoryOwner.refresh();
         MovementKeys.refresh();
         JumpController.refresh();

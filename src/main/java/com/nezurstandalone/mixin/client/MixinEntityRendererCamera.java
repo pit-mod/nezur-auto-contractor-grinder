@@ -28,5 +28,6 @@ public class MixinEntityRendererCamera {
     @Inject(method={"updateCameraAndRender","func_181560_a"},at=@At("TAIL"),remap=false,require=1)
     private void finishLookFrame(float partialTicks,long finishTimeNano,CallbackInfo ci) {
         RotationManager.getInstance().finishCameraFrame();
+        com.nezurstandalone.combat.ServerRotations.frame();
     }
 }

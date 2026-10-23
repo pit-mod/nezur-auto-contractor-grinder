@@ -71,6 +71,10 @@ public final class BlockheadController {
         running=false;
         observedPowerups=Collections.emptyList();powerupScanAt=0;
     }
+    /** Read-only HUD evidence; does not run another scan or change the current plan. */
+    public Goal observedGoal(){return goal;}
+    public int observedPowerupCount(){return observedPowerups.size();}
+    public long quicktrailRemaining(long now){return Math.max(0,quicktrailUntil-now);}
     public void chat(String text,long now) {
         String normalized=letters(text);
         if(normalized.startsWith("poweruppickedupquicktrailpowerup")) {quicktrailUntil=now+20000; goal=null; planAt=0;}

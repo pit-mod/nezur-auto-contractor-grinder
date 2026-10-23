@@ -77,8 +77,8 @@ public final class ContractCombatPolicy {
                 && !intended.isDead && intended.worldObj == mc.theWorld
                 && ((EntityPlayer) intended).getHealth() > 0
                 && mc.thePlayer.getDistanceToEntity(intended) <= sneakRadius
-                && "Pit".equals(com.nezurstandalone.utils.PitMapManager.getZone(
-                        mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ));
+                && com.nezurstandalone.utils.PitMapManager.isInCombatArea(
+                        mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
     }
 
     private static boolean sneakHitReady(Entity intended) {

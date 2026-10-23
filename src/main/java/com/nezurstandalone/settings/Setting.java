@@ -5,6 +5,12 @@ import java.util.List;
 import java.util.function.Consumer;
 
 public abstract class Setting {
+    private static final ThreadLocal<Boolean> restoring=ThreadLocal.withInitial(()->false);
+    public static boolean isRestoring(){return restoring.get();}
+    public static void restore(Runnable mutation){
+        boolean previous=restoring.get();restoring.set(true);
+        try{mutation.run();}finally{restoring.set(previous);}
+    }
     public String name;
     public boolean visible = true;
     private final List<Consumer<Setting>> changeListeners = new ArrayList<>();

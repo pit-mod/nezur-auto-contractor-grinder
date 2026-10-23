@@ -11,6 +11,15 @@ public final class ContractTracker {
     private long absentSince=-1;
     private boolean seenOnSidebar;
     private boolean identityVerified;
+    private int playerStreak=-1;
+    /** Player streak drives live display, without replacing authoritative contract evidence. */
+    public ContractScoreboard.Snapshot withPlayerStreak(ContractScoreboard.Snapshot view,int streak){
+        if(view==null || !view.active || view.type!=ContractOffer.Type.KILL_STREAK){playerStreak=-1;return view;}
+        if(streak>=0)playerStreak=streak;
+        if(playerStreak<0)return view;
+        return new ContractScoreboard.Snapshot(view.validPit,view.readable,true,view.type,
+                playerStreak,view.target,view.remainingSeconds,view.objective);
+    }
     public boolean needsIdentityInspection(ContractScoreboard.Snapshot live){
         return live!=null && live.active && live.type==ContractOffer.Type.KILL_PLAYERS && !identityVerified;
     }
@@ -19,15 +28,16 @@ public final class ContractTracker {
         switch(type){
             case DIAMOND_SWORD_FINAL_BLOW: case NO_ARMOR_KILLS: case NO_PERK_KILLS:
             case FIST_MID_KILLS: case SNEAK_ATTACK_KILLS: case GRASS_KILLS:
-            case LAVA_KILLS: case OBSIDIAN_KILLS: case BOW_TAG_KILLS: case FISH_DIAMOND_SWORD:
+            case LAVA_KILLS: case OBSIDIAN_KILLS: case BOW_TAG_KILLS: case FISH_DIAMOND_SWORD: case KILL_STREAK:
                 return true;
             default:return false;
         }
     }
-    public void clear() { identityVerified=false;confirmed=null;deadline=0;estimated=false;absentSince=-1;seenOnSidebar=false;lastSidebarSeconds=-1;timerPaused=true; }
+    public void clear() { playerStreak=-1;identityVerified=false;confirmed=null;deadline=0;estimated=false;absentSince=-1;seenOnSidebar=false;lastSidebarSeconds=-1;timerPaused=true; }
     public boolean estimated() { return estimated; }
     public void confirm(ContractScoreboard.Snapshot evidence,long now) {
         if(evidence==null || !evidence.active)return;
+        playerStreak=-1;
         identityVerified=evidence.type!=ContractOffer.Type.UNKNOWN;
         update(evidence,now);
     }

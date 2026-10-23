@@ -18,7 +18,7 @@ buildscript {
 
 apply plugin: 'net.minecraftforge.gradle.forge'
 
-version = "1.5.2"
+version = "1.5.4"
 group = "com.nezurstandalone"
 archivesBaseName = "Nezur-AutoContractor-Grinder"
 targetCompatibility = "1.8"
@@ -133,3 +133,34 @@ task verifyStandalone {
         javaexec { classpath = vanillaCp; main = 'IsolatedMixinProbe'; args jar.archivePath.absolutePath; workingDir = sandbox }
     }
 }
+
+compilePortChecks.source files('tools/AutomationSyncProbe.java', 'tools/AutomationBoundaryTest.java',
+        'tools/LoadoutPlannerTest.java', 'tools/LoadoutStartupTest.java', 'tools/LoadoutGoldObserverTest.java',
+        'tools/LoadoutConfirmationTest.java', 'tools/LoadoutCompletionTest.java', 'tools/OverdriveOofTest.java', 'tools/LowestClassicPitTest.java', 'tools/StationaryEggsTest.java', 'tools/UpgradeNpcMatcherTest.java', 'tools/GrinderMovementTest.java', 'tools/SidebarTextTest.java', 'tools/LoadoutContextTest.java', 'tools/GrinderHudStatsTest.java')
+
+task automationSafetyTest(dependsOn: compilePortChecks) {
+    doLast {
+        def sandbox = file("$buildDir/automation-safety-sandbox")
+        sandbox.mkdirs()
+        def cp = files(compilePortChecks.destinationDir, compileJava.destinationDir) + sourceSets.main.runtimeClasspath
+        ['AutomationSyncProbe', 'OverdriveOofTest', 'LoadoutPlannerTest', 'LoadoutStartupTest',
+         'LoadoutGoldObserverTest', 'LoadoutConfirmationTest', 'LoadoutCompletionTest', 'LowestClassicPitTest', 'StationaryEggsTest', 'UpgradeNpcMatcherTest', 'GrinderMovementTest', 'SidebarTextTest', 'LoadoutContextTest', 'GrinderHudStatsTest'].each { probe ->
+            javaexec { classpath = cp; main = probe; workingDir = sandbox }
+        }
+        javaexec { classpath = cp; main = 'AutomationBoundaryTest'; args new File(sandbox, 'diagnostics').absolutePath; workingDir = sandbox }
+    }
+}
+check.dependsOn automationSafetyTest
+
+task interactionBoundaryTest(dependsOn: classes) {
+    doLast {
+        ['run-autoheal-tests.py', 'run-grinder-combat-tests.py', 'gold-collection-regression.py',
+         'sneak-policy-regression.py', 'run-map-cache-tests.py'].each { script ->
+            exec {
+                commandLine 'python', "tools/tests/$script"
+                environment 'JAVA_HOME', project.findProperty('org.gradle.java.home') ?: System.getenv('JAVA_HOME') ?: System.getProperty('java.home')
+            }
+        }
+    }
+}
+check.dependsOn interactionBoundaryTest

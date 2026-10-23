@@ -37,6 +37,10 @@ import java.util.function.Predicate;
  * so every reader sees a consistent pair.
  */
 public final class PathfinderManager {
+    public static java.util.function.BooleanSupplier movementAllowed = () -> true;
+    public static java.util.function.BooleanSupplier navigationAllowed = () -> true;
+    public static boolean ownsMovement(){return NAVIGATION.get().walk || AutoWalker.INSTANCE.isActive();}
+    public static String ownerName(){return owner==null?"none":owner.getClass().getSimpleName();}
     public enum State { IDLE, SEARCHING, ACTIVE, COMPLETED, FAILED, CANCELLED }
     public enum Outcome { SUCCESS, PARTIAL, NO_PATH, CANCELLED, ERROR }
     private static volatile State state = State.IDLE;
@@ -47,9 +51,9 @@ public final class PathfinderManager {
     public static final class NavigationHandle {
         private final Object owner; private final long session,generation;
         private NavigationHandle(Object owner){this.owner=owner;session=com.nezurstandalone.control.ClientSession.current();generation=++handleGeneration;}
-        public boolean valid(){return this==handle && owner==PathfinderManager.owner && session==com.nezurstandalone.control.ClientSession.current();}
+        public boolean valid(){return navigationAllowed.getAsBoolean()  && this==handle && owner==PathfinderManager.owner && session==com.nezurstandalone.control.ClientSession.current();}
     }
-    public static NavigationHandle claim(Object requester){return acquire(requester)?handle:null;}
+    public static NavigationHandle claim(Object requester){return movementAllowed.getAsBoolean()&&acquire(requester)?handle:null;}
     public static boolean stop(NavigationHandle h){if(h==null||!h.valid())return false;AutoWalker.INSTANCE.stop();return true;}
     public static boolean reset(NavigationHandle h){if(h==null||!h.valid())return false;AutoWalker.INSTANCE.resetForNewSession();return true;}
     public static boolean combatTarget(NavigationHandle h,net.minecraft.entity.player.EntityPlayer target){if(h==null||!h.valid())return false;AutoWalker.INSTANCE.setCombatTarget(target);return true;}
@@ -80,16 +84,17 @@ public final class PathfinderManager {
     /** Full walker session wipe only when the manager is free or already owned by the requester. */
     public static boolean resetIfAvailable(Object requester) { if (!available(requester)) return false; AutoWalker.INSTANCE.resetForNewSession(); return true; }
     public static boolean combatSettings(NavigationHandle h,boolean strafe,boolean jumps,double reach){if(h==null||!h.valid())return false;AutoWalker.INSTANCE.combatStrafe=strafe;AutoWalker.INSTANCE.combatJumps=jumps;AutoWalker.INSTANCE.combatReach=reach;return true;}
-    public static State walkTo(NavigationHandle h,double x,double y,double z,boolean silent){if(h==null||!h.valid())return State.CANCELLED;navigate(x,y,z,silent,true,false,null);return state;}
+    public static State walkTo(NavigationHandle h,double x,double y,double z,boolean silent){if(h==null||!h.valid()||!movementAllowed.getAsBoolean())return State.CANCELLED;navigate(x,y,z,silent,true,false,null);return state;}
     public static boolean clear(NavigationHandle h,boolean silent){if(h==null||!h.valid())return false;clear(h.owner,silent);return true;}
 
     private static final Object LEGACY_OWNER = new Object();
     private static AStarPathfinder preparing;
     private static Runnable launchPrepared;
-    static boolean hasValidHandle(){return handle!=null&&handle.valid();}
+    static boolean hasValidHandle(){return movementAllowed.getAsBoolean()&&handle!=null&&handle.valid();}
     public static State getState() { return state; }
     public static Outcome getOutcome() { return outcome; }
     public static boolean acquire(Object requester) {
+        if(!navigationAllowed.getAsBoolean())return false;
         if(requester==null)return false;
         if(handle!=null&&!handle.valid()){cancelInternal(true);owner=null;handle=null;}
         if (owner != null && owner != requester) return false;
@@ -111,6 +116,7 @@ public final class PathfinderManager {
     }
 
     public static State walkTo(Object requester,double x,double y,double z,boolean silent) {
+        if(!movementAllowed.getAsBoolean())return State.CANCELLED;
         if (!acquireOrLog(requester)) return State.CANCELLED;
         navigate(x,y,z,silent,true,false,null); return state;
     }
@@ -125,6 +131,7 @@ public final class PathfinderManager {
     }
     public static boolean available(Object requester) { return owner == null || owner == requester; }
     public static State walkTo(Object requester,double x,double y,double z,boolean silent,Predicate<BlockPos> bounds) {
+        if(!movementAllowed.getAsBoolean())return State.CANCELLED;
         if(!acquireOrLog(requester))return State.CANCELLED; navigate(x,y,z,silent,true,false,bounds); return state;
     }
     public static void gotoXYZ(Object requester,double x,double y,double z,boolean silent,Predicate<BlockPos> bounds) {
@@ -320,11 +327,13 @@ public final class PathfinderManager {
 
     /** Computes a route and drives the player along it, from a clean walker state. */
     public static void walkTo(double x, double y, double z, boolean silent) {
+        if(!movementAllowed.getAsBoolean())return;
         if (!acquire(LEGACY_OWNER)) return;
         navigate(x, y, z, silent, true, false, null);
     }
 
     public static void walkTo(double x, double y, double z, boolean silent, Predicate<BlockPos> bounds) {
+        if(!movementAllowed.getAsBoolean())return;
         if (!acquire(LEGACY_OWNER)) return;
         navigate(x, y, z, silent, true, false, bounds);
     }
@@ -352,6 +361,7 @@ public final class PathfinderManager {
      */
     private static void navigate(double x, double y, double z, boolean silent, boolean walk,
                                  boolean requestedResume, Predicate<BlockPos> bounds) {
+        if(walk&&!movementAllowed.getAsBoolean())return;
         Minecraft mc = Minecraft.getMinecraft();
         if (mc.thePlayer == null || mc.theWorld == null) {
             return;
@@ -560,10 +570,11 @@ public final class PathfinderManager {
         if (owner != null && owner != LEGACY_OWNER) return;
         cancelInternal(silent); owner = null;
     }
-    /** Abandon an exhausted route without losing event items. */
-    static void fail() { cancelInternal(true); owner=null; state=State.FAILED; outcome=Outcome.NO_PATH; }
     /** Walker completion/recovery is part of the currently leased navigation. */
     static void complete() { cancelInternal(true); owner=null; state=State.COMPLETED; }
+    /** Abandon an exhausted route without killing the player or losing event items. */
+    static void fail() { cancelInternal(true); owner=null; state=State.FAILED; outcome=Outcome.NO_PATH; }
+    public static void authorizationLost(){try{cancelInternal(true);}finally{owner=null;handle=null;}}
     private static void cancelInternal(boolean silent) {
         WorldCapture.cancel();
         preparing=null; launchPrepared=null;

@@ -58,8 +58,7 @@ import java.util.regex.Pattern;
  * <p>All movement runs through {@link AutoWalker} / {@link PathfinderManager}; all rotation runs
  * through the shared {@link RotationManager} (the walker's steering aim, the combat aim, and the
  * NPC-interact aim are all its clients — this class never writes {@code rotationYaw} directly);
- * combat is the {@link CombatAura} self-defence driver carrying the grinder's smart target
- * selection (team filter, low-HP priority, Focus/Friend/line-of-sight).
+ * combat delegates to {@link KillAura}, using its live targeting, clicking and rotation settings.
  *
  * <p>On top of the core grind it routes the Pit's events — Spire (wait/rush/fight), Squads (rank
  * swap), Rage Pit / TDM (grind through, no swap/break) — tracks Night-Quest timing, and mutes the
@@ -72,7 +71,7 @@ import java.util.regex.Pattern;
 public class GrinderEngine extends Module implements DraggableHud {
 
     public enum State {
-        IDLE, LEAVING_SPAWN, FIGHTING, DRAGON_EGG, LOBBY_SWAP, LIMBO, LOBBY_RECONNECT, JOINING_PIT, PICKING_UP_MYSTIC,
+        IDLE, LEAVING_SPAWN, FIGHTING, RETURNING_TO_MID, DRAGON_EGG, LOBBY_SWAP, LIMBO, LOBBY_RECONNECT, JOINING_PIT, PICKING_UP_MYSTIC,
         SPIRE_WAITING_SPAWN, SPIRE_WALK_TO_MID, SPIRE_FIGHTING,
         BLOCKHEAD_PAINTING, BLOCKHEAD_POWERUP, BLOCKHEAD_FIGHTING, BLOCKHEAD_AVOIDING,
         ROBBERY_FIGHTING, ROBBERY_RETREATING, ROBBERY_BANKED,
@@ -87,29 +86,13 @@ public class GrinderEngine extends Module implements DraggableHud {
     private String previousZone = "";
 
     private final Object interactionOwner = new Object();
-    private final Object pitClickOwner = new Object();
-    private final com.nezurstandalone.combat.AutoClicker pitClicker = new com.nezurstandalone.combat.AutoClicker()
-            .pauseChance(0.0).emitter(() -> GuardedInput.attackCrosshair(pitClickOwner, this::canPitClick));
-
-    private boolean canPitClick() {
-        return isToggled() && correctionTick < 0 && !isOnBreak && !hasDragonEggPriority() && !isAutoRaffleActive() && !isAutoBlockheadActive() && mc.thePlayer != null && mc.theWorld != null
-                && (!isAutoRobberyActive() || (combatPermitted && combat.getTarget() instanceof EntityPlayer
-                    && robbery.canTarget((EntityPlayer)combat.getTarget()) && mc.objectMouseOver!=null
-                    && mc.objectMouseOver.entityHit==combat.getTarget()))
-                && mc.currentScreen == null && !mc.thePlayer.isDead && mc.thePlayer.getHealth() > 0
-                && !mc.thePlayer.isUsingItem() && !isAutoHealBusy()
-                && mc.thePlayer.openContainer == mc.thePlayer.inventoryContainer
-                && com.nezurstandalone.control.InventoryOwner.available(this)
-                && PitMapManager.getZone(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ).equals("Pit")
-                && com.nezurstandalone.contract.ContractCombatPolicy.allowsCrosshairAttack();
-    }
 
     private boolean hasDragonEggPriority() {
         return dragonEggSupport.isEnabled() && currentEgg != null;
     }
 
     public static boolean usesPitClicker(CombatAura caller) {
-        return instance != null && instance.combat == caller && instance.canPitClick();
+        return false; // KillAura is the sole attack stream for grinder/contractor combat.
     }
 
 
@@ -120,7 +103,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     private long diagnosticPacketStart;
     private void diagnosticTick() {
         try {
-            com.nezurstandalone.control.GrinderDiagnostics.setActive(isToggled(), new java.io.File(mc.mcDataDir, "logs/nezur-diagnostics"));
+            com.nezurstandalone.control.GrinderDiagnostics.setActive(isToggled() && debugLogging.isEnabled(), new java.io.File(mc.mcDataDir, "logs/nezur-acg-diagnostics"));
             if (!isToggled()) return;
             String state = String.valueOf(currentState);
             if (!state.equals(diagnosticState)) {
@@ -129,8 +112,10 @@ public class GrinderEngine extends Module implements DraggableHud {
             }
             if (com.nezurstandalone.control.GrinderDiagnostics.sampleDue()) diagnosticSnapshot("SAMPLE");
         } catch (RuntimeException ignored) { /* Diagnostics must not control gameplay. */ }
+        diagnosticGameDump();
     }
     private void diagnosticSnapshot(String event) {
+        if(!com.nezurstandalone.control.GrinderDiagnostics.isActive())return;
         try {
             if (mc.thePlayer==null || mc.theWorld==null) {
                 com.nezurstandalone.control.GrinderDiagnostics.record(event,"world_or_player_missing=true"); return;
@@ -151,8 +136,8 @@ public class GrinderEngine extends Module implements DraggableHud {
                 +" gui="+(mc.currentScreen==null?"none":mc.currentScreen.getClass().getSimpleName())
                 +" zone="+PitMapManager.getZone(p.posX,p.posY,p.posZ)+" targetId="+(target==null?-1:target.getEntityId())
                 +" targetDistance="+(target==null?-1:p.getDistanceToEntity(target))+" raycast="+hit
-                +" combatStage="+combat.getStage()+" combatPermitted="+combatPermitted+" clickEligible="+canPitClick()
-                +" cpsMin="+botCpsMin.value+" cpsMax="+botCpsMax.value+" healing="+isAutoHealBusy()
+                +" combatStage="+combat.getStage()+" combatPermitted="+combatPermitted+" clickEligible="+mayFight()
+                +" cpsMin="+activeCombatOptions().minCps()+" cpsMax="+activeCombatOptions().maxCps()+" healing="+isAutoHealBusy()
                 +" eggPriority="+hasDragonEggPriority()+" pathing="+PathfinderManager.isPathing()
                 +" correctionTick="+correctionTick+" session="+com.nezurstandalone.control.ClientSession.current());
         } catch (RuntimeException failure) {
@@ -200,6 +185,9 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     public static boolean isRunning() { return instance != null && instance.isToggled(); }
+    public static boolean hasUnconfirmedOperation(){return isRunning() && (instance.menuTransition.isPending()
+            || com.nezurstandalone.input.WindowActions.pending(instance));}
+    public static String diagnosticState(){return instance==null?"none":instance.currentState+" combat="+instance.combatPermitted;}
 
     public static boolean isAutoBlockheadActive() {
         return isRunning() && instance.autoBlockhead.isEnabled() && BlockheadController.live();
@@ -235,11 +223,33 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     public static boolean isMidPressureActive(CombatAura caller) {
-        return isMidPressureActive() && instance.combat == caller;
+        return false; // Legacy CombatAura consumers do not own this macro's combat.
+    }
+
+    public static boolean ownsCombatChase(EntityPlayer target) {
+        return target!=null && isRunning() && instance.mayFight() && instance.combat.getTarget()==target;
     }
 
 
     public static void onMenuContents(int window,Object container){if(instance!=null)instance.menuTransition.contents(window,container);}
+    /** Only server packet stacks populate loadout evidence, including menus opened by the user. */
+    public static void onLoadoutContents(int window, Object container, ItemStack[] stacks) {
+        if(instance!=null)instance.completeMysticPickupOnInventory();
+        if(instance==null || !(container instanceof ContainerChest))return;
+        instance.observeLoadoutPacket(window,(ContainerChest)container,stacks,-1);
+    }
+    public static void onLoadoutSlot(int window,int index,ItemStack stack) {
+        if(instance!=null)instance.completeMysticPickupOnInventory();
+        if(instance==null || instance.mc.thePlayer==null || !(instance.mc.thePlayer.openContainer instanceof ContainerChest))return;
+        instance.observeLoadoutPacket(window,(ContainerChest)instance.mc.thePlayer.openContainer,new ItemStack[]{stack},index);
+    }
+    public static void onLoadoutScoreboard() {
+        if(instance==null || instance.mc.thePlayer==null || instance.mc.theWorld==null)return;
+        instance.refreshPerkAccount();
+        Utils.getScoreboardLinesFresh();
+        instance.refreshLoadoutRequirements();
+        instance.refreshLoadoutGold();
+    }
     public static void onMenuConfirmation(int window, short action, boolean accepted) {
         if (instance != null) instance.menuTransition.confirm(window, action, accepted);
     }
@@ -288,43 +298,110 @@ public class GrinderEngine extends Module implements DraggableHud {
     private final BooleanSetting nightQuestSupport = new BooleanSetting("Night Quest Support", true);
     private final BooleanSetting autoPerk = new BooleanSetting("Auto Perk", true);
     private final BooleanSetting autoPrestige = new BooleanSetting("Auto Prestige", false);
-    private final BooleanSetting dragonEggSupport = new BooleanSetting("Dragon Egg Support", true);
+    private final BooleanSetting oofOnOverdrive = new BooleanSetting("Oof on Overdrive", false);
+    private final com.nezurstandalone.control.OverdriveOof overdriveOof = new com.nezurstandalone.control.OverdriveOof();
+    private final BooleanSetting dragonEggSupport = new BooleanSetting("Dragon Egg Support", false);
     private final BooleanSetting muteGame = new BooleanSetting("Mute Game", false);
     private final BooleanSetting breakTimeEnable = new BooleanSetting("Enable Break Time", false);
     private final NumberSetting workDurationLimit = new NumberSetting("Work Time (h)", 2, 0.1, 24, 1);
     private final NumberSetting breakDurationLimit = new NumberSetting("Break Time (m)", 20, 1, 120, 0);
-    private final NumberSetting ttkSpeed=new NumberSetting("TTK Movement Speed",5.6,1,8,1),
-            ttkInterval=new NumberSetting("TTK Hit Interval",0.5,0.5,1.5,2),
-            ttkDamage=new NumberSetting("TTK Fallback Damage",6,1,20,1),
-            ttkSwitch=new NumberSetting("TTK Switch Improvement %",20,5,50,0);
-    private final BooleanSetting ttkDebug=new BooleanSetting("TTK Debug",false);
-    private final BooleanSetting prioritizeHealth = new BooleanSetting("Target Fastest Kill", true);
-    private final BooleanSetting teamCheckTdm = new BooleanSetting("Team Check (TDM)", true);
-    // Aim reach is no longer a slider - it is just the fallback search range used when nobody is
-    // within attack reach. Attack reach is what decides the target.
-    private static final double AIM_FALLBACK_REACH = 30.0;
-    private final NumberSetting botAttackReach = new NumberSetting("Attack Reach", 3.0, 1.0, 3.0, 1);
-    private final NumberSetting botCpsMin = new NumberSetting("CPS Min", 8, 3, 16, 0);
-    private final NumberSetting botCpsMax = new NumberSetting("CPS Max", 12, 3, 20, 0);
-    private final NumberSetting combatAimSpeed = new NumberSetting("Combat Aim Speed", 15, 5, 30, 1);
     private final NumberSetting interactAimSpeed = new NumberSetting("Interact Aim Speed", 16, 5, 30, 1);
+    private final NumberSetting aimSpeed = new NumberSetting("Aim Speed", 4, 1, 50, 1);
     private final BooleanSetting onlyEventMode = new BooleanSetting("Only Event Mode", false);
     private final BooleanSetting showHud = new BooleanSetting("Show HUD", true);
+    private final NumberSetting hudScale = new NumberSetting("HUD Scale", 0.9, 0.6, 1.4, 2);
     private final BooleanSetting hudAnimations = new BooleanSetting("HUD Animations", true);
     private final BooleanSetting debugLogging = new BooleanSetting("Debug Logging", false);
 
     // ---- combat -------------------------------------------------------------
-    private final CombatAura combat = new CombatAura().cps(8, 12).reach(3.0).fovToClick(60.0).clickRange(3.0).nearbyFirst(5.0)
-            .allowedWhen(this::mayFight)
-            .allowUnlistedPitNpcsWhen(() -> isClassicPitTitle(Utils.getScoreboardTitle()));
+    private final com.nezurstandalone.combat.CombatOptions combatOptions=new com.nezurstandalone.combat.CombatOptions();
+    private final com.nezurstandalone.settings.BooleanSetting advancedSettings=new com.nezurstandalone.settings.BooleanSetting("Show Advanced Settings",false);
+    private final com.nezurstandalone.settings.ModeSetting quickSetup=new com.nezurstandalone.settings.ModeSetting("Quick Setup","Custom","Custom","Conservative","Balanced","Aggressive");
+    private Module combatOptionsOwner;
+    private com.nezurstandalone.combat.CombatOptions borrowedCombatOptions;
+    private long combatOptionsSession;
+    public final void claimCombatOptions(Module owner,com.nezurstandalone.combat.CombatOptions options){
+        combatOptionsOwner=owner;borrowedCombatOptions=options;combatOptionsSession=com.nezurstandalone.control.ClientSession.current();
+    }
+    public final void releaseCombatOptions(Module owner){if(combatOptionsOwner==owner){combatOptionsOwner=null;borrowedCombatOptions=null;combat.resetTargeting();}}
+    private com.nezurstandalone.combat.CombatOptions activeCombatOptions(){
+        return combatOptionsOwner!=null&&combatOptionsOwner.isToggled()&&combatOptionsSession==com.nezurstandalone.control.ClientSession.current()&&borrowedCombatOptions!=null?borrowedCombatOptions:combatOptions;
+    }
+    @Override public boolean isSettingVisible(com.nezurstandalone.settings.Setting setting){
+        if(!setting.isVisible())return false;
+        if(advancedSettings.enabled)return true;
+        String name=setting.name;
+        return setting==keybind||setting==advancedSettings||setting==quickSetup||name.startsWith("KillAura ")||name.equals("Combat Preset")||name.equals("Use KillAura")
+                ||name.equals("CPS Min")||name.equals("CPS Max")||name.equals("Attack Reach")||name.equals("Combat Aim Speed")||name.equals("Team Check (TDM)")
+                ||setting==autoWeapon||setting==idleRetreat||setting==onlyEventMode||setting==aimSpeed||setting==oofOnOverdrive
+                ||setting==autoPerk||setting==perk1||setting==perk2||setting==perk3||setting==perk4||setting==minMidPlayers||setting==lobbySwap
+                ||setting==showHud||setting==hudScale||name.equals("Hide in HUD");
+    }
+    private final SpireTargeting<net.minecraft.entity.EntityLivingBase> spireTargeting=new SpireTargeting<>();
+    private java.util.function.Function<java.util.List<com.nezurstandalone.combat.AuraTargeting.Candidate<net.minecraft.entity.EntityLivingBase>>,net.minecraft.entity.EntityLivingBase> grinderTargetSelector;
+    private final com.nezurstandalone.combat.GrinderCombat combat = new com.nezurstandalone.combat.GrinderCombat(this,this::mayFight,this::allowsCombatTarget,this::combatAimSpeed,this::activeCombatOptions)
+            .targetSelector(this::selectGrinderTarget).targetSelectorWhen(this::customGrinderSelection);
+    private Module aimSpeedOwner;
+    private java.util.function.DoubleSupplier aimSpeedOverride;
+    private long aimSpeedSession;
+
+    /** Contractor supplies its live camera preference without overwriting Grinder's saved value. */
+    public final void claimCombatAimSpeed(Module owner,java.util.function.DoubleSupplier speed) {
+        aimSpeedOwner=owner;aimSpeedOverride=speed;aimSpeedSession=com.nezurstandalone.control.ClientSession.current();
+    }
+
+    public final void releaseCombatAimSpeed(Module owner) {
+        if(aimSpeedOwner==owner){aimSpeedOwner=null;aimSpeedOverride=null;}
+    }
+
+    private double combatAimSpeed() {
+        if(aimSpeedOwner!=null && aimSpeedOwner.isToggled() && aimSpeedOverride!=null
+                && aimSpeedSession==com.nezurstandalone.control.ClientSession.current())return aimSpeedOverride.getAsDouble();
+        return aimSpeed.value;
+    }
 
     private boolean mayFight() {
-        return combatPermitted && isToggled() && !isOnBreak && !isAutoHealBusy() && !hasDragonEggPriority() && !isAutoBlockheadActive()
+        return combatPermitted && isToggled() && correctionTick < 0 && !isOnBreak && !hasDragonEggPriority() && !isAutoBlockheadActive()
+                && (!hasTemporaryPerkLease() || !contractKungFuRestoring && contractKungFuReady)
                 && PathfinderManager.available(this) && isCombatState(currentState);
     }
 
+    private boolean allowsCombatTarget(EntityPlayer player) {
+        boolean region=currentState==State.SPIRE_FIGHTING
+                ? PitCombatArea.sameSpireFloor(mc.thePlayer.posY,player.posY)
+                : isRagePitEventActive() ? !Utils.isInSpawn() && !safeCombatZone(player)
+                : PitMapManager.isInCombatArea(player.posX,player.posY,player.posZ);
+        return region && (currentState != State.ROBBERY_FIGHTING || robbery.canTarget(player)) && tdmAllows(player);
+    }
+
+    private boolean safeCombatZone(EntityPlayer player) {
+        String zone=PitMapManager.getZone(player.posX,player.posY,player.posZ);
+        return zone.equals("Spawn") || zone.equals("Overspawn") || zone.equals("Sewer");
+    }
+
+    public static boolean allowsCombatJump() {
+        return isRunning() && instance.combatPermitted && instance.mc.thePlayer!=null
+                && (instance.currentState==State.SPIRE_FIGHTING
+                    || PitMapManager.isInCombatArea(instance.mc.thePlayer.posX,instance.mc.thePlayer.posY,instance.mc.thePlayer.posZ));
+    }
+
+    private boolean mayReturnToMid() {
+        return PitCombatArea.mayReturn(isRagePitEventActive(),
+                "Pit".equals(PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ)),
+                PitMapManager.isInCombatArea(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ));
+    }
+
+    private boolean customGrinderSelection() {
+        return currentState==State.SPIRE_FIGHTING || refreshTdmContext() || currentState==State.FIGHTING && grinderTargetSelector!=null;
+    }
+    private net.minecraft.entity.EntityLivingBase selectGrinderTarget(java.util.List<com.nezurstandalone.combat.AuraTargeting.Candidate<net.minecraft.entity.EntityLivingBase>> candidates) {
+        if(currentState==State.SPIRE_FIGHTING)return spireTargeting.select(candidates,activeCombatOptions().range());
+        if(refreshTdmContext())return tdmAssists.select(candidates,activeCombatOptions().range());
+        spireTargeting.reset();return grinderTargetSelector==null?null:grinderTargetSelector.apply(candidates);
+    }
+
     private static boolean isCombatState(State state) {
-        return state == State.FIGHTING || state == State.SPIRE_FIGHTING
+        return state == State.FIGHTING || state == State.RETURNING_TO_MID || state == State.SPIRE_FIGHTING
                 || state == State.ROBBERY_FIGHTING;
     }
 
@@ -408,12 +485,12 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     // ---- HUD ---------------------------------------------------------------
     private long sessionStartTime = 0L;
-    private final Spring hudAppear = new Spring(0f);
-    private final Spring midSpring = new Spring(0f);
-    private final Spring mysticSpring = new Spring(0f);
-    private final Spring hpSpring = new Spring(0f);
-    private final Spring hpLagSpring = new Spring(0f);
-    private final Spring activitySpring = new Spring(0f);
+    private final GrinderHudStats hudStats=new GrinderHudStats();
+    private com.nezurstandalone.gui.GrinderDashboard.Snapshot hudSnapshot;
+    private long hudSnapshotAt;
+    private Object hudSnapshotWorld;
+    private State hudSnapshotState;
+    private long hudFadeStart;
 
     // perk / prestige NPC interaction
     private int npcPosIndex = 0;
@@ -478,9 +555,6 @@ public class GrinderEngine extends Module implements DraggableHud {
     private final BooleanSetting autoKillstreak = new BooleanSetting("Auto Killstreak", false);
     private final com.nezurstandalone.settings.PerkSetting ks1 = new com.nezurstandalone.settings.PerkSetting("Killstreak 1 (Lv 10)", "No Perk", ALL_KS_OPTIONS);
     private final com.nezurstandalone.settings.PerkSetting ks2 = new com.nezurstandalone.settings.PerkSetting("Killstreak 2 (Lv 75)", "No Perk", ALL_KS_OPTIONS);
-    private boolean ksNeedSync = false;
-    private final boolean[] ksAttempted = new boolean[2];
-    private String lastKsSig = "";
     private boolean perksNeedSync = false;
     // Contract-owned temporary perk lease. NO_PERK clears all slots; Kung Fu replaces one safe slot.
     private boolean contractGappleRequested, contractGappleRemove;
@@ -496,16 +570,223 @@ public class GrinderEngine extends Module implements DraggableHud {
     private String lastPerkUser = null;
     private final boolean[] perkAttempted = new boolean[4];
     private String targetPerkName = "No Perk";
-    private String lastPerkSig = "";
     private long interactStamp = 0L;
     private long navRepathAt = 0L;
     private long npcSpotStartedAt;
-    private long lastPerkGoldGateLogAt;
-    private double deferredSyncGoldRequirement = Double.NaN;
-    private String deferredSyncGoldSignature = "";
-    private long deferredSyncGoldUntil;
-    private boolean perkGoldPreflightDone;
-    private double preflightPerkGoldCost;
+
+    private final LoadoutPlanner loadout = new LoadoutPlanner(this::log);
+    private final LoadoutGoldObserver loadoutGold = new LoadoutGoldObserver();
+    private final LoadoutConfirmation loadoutConfirmation = new LoadoutConfirmation();
+    private final LoadoutContext loadoutContext=new LoadoutContext();
+    private Object loadoutWorld;
+    private boolean managedVisit;
+    private boolean loadoutSettingsDirty=true;
+    private java.util.List<String> lastLoadoutLines=java.util.Collections.emptyList();
+    private LoadoutPlanner.Slot chooserSlot;
+
+    private void refreshLoadoutGold() {
+        net.minecraft.client.network.NetHandlerPlayClient connection=mc.getNetHandler();
+        net.minecraft.scoreboard.ScoreObjective objective=mc.theWorld==null?null:Utils.displayedSidebar(mc.theWorld.getScoreboard());
+        boolean connected=connection!=null && connection.getNetworkManager()!=null
+                && connection.getNetworkManager().isChannelOpen() && mc.thePlayer!=null;
+        loadoutGold.observe(loadout,mc.theWorld,connection,objective,connected,
+                isPitScoreboardTitle(Utils.getScoreboardTitle()),Utils.getScoreboardLines(),com.nezurstandalone.control.Clock.millis());
+    }
+
+    private void refreshLoadoutRequirements() {
+        if(mc.thePlayer==null || mc.theWorld==null)return;
+        String title=Utils.getScoreboardTitle();
+        if(!isPitScoreboardTitle(title))return;
+        if(loadoutWorld!=mc.theWorld){
+            loadout.invalidateGold();loadoutWorld=mc.theWorld;
+            lastLoadoutLines=java.util.Collections.emptyList();loadoutSettingsDirty=true;
+        }
+        loadout.suspend(hasTemporaryPerkLease());
+        java.util.List<String> lines=Utils.getScoreboardLines();
+        if(!loadoutSettingsDirty && lines.equals(lastLoadoutLines))return;
+        loadoutSettingsDirty=false;lastLoadoutLines=lines;
+        loadoutContext.observe(loadout,mc.theWorld,lastPerkUser,title,lines);
+        loadout.requirements(Utils.getLevel(),theWay.isEnabled());
+        loadout.suspend(hasTemporaryPerkLease());
+        com.nezurstandalone.settings.PerkSetting[] perks=perkBoxes(),streaks=ksBoxes();
+        for(int i=0;i<perks.length;i++)loadout.configure(LoadoutPlanner.Kind.PERK,i+1,perks[i].getMode(),autoPerk.isEnabled());
+        for(int i=0;i<streaks.length;i++)loadout.configure(LoadoutPlanner.Kind.KILLSTREAK,i+1,streaks[i].getMode(),autoKillstreak.isEnabled());
+    }
+
+    private void observeLoadoutPacket(int window,ContainerChest container,ItemStack[] stacks,int index) {
+        if(mc.thePlayer==null || mc.theWorld==null || !mc.isCallingFromMinecraftThread()
+                || mc.thePlayer.openContainer!=container || container.windowId!=window
+                || !isPitScoreboardTitle(Utils.getScoreboardTitle()))return;
+        int size=container.getLowerChestInventory().getSizeInventory();
+        if(index>=size||index< -1)return; // Player inventory updates are not menu evidence.
+        refreshPerkAccount();refreshLoadoutRequirements();
+        String kind=menuKind(container.getLowerChestInventory().getDisplayName().getUnformattedText());
+        if(isToggled() && currentState==State.PRESTIGE_CLICKING_GUI
+                && !isClassicPitTitle(Utils.getScoreboardTitle()) && kind.equals("confirm")) {
+            String title=container.getLowerChestInventory().getDisplayName().getUnformattedText();
+            for(int i=0;i<(index<0?Math.min(stacks.length,size):stacks.length);i++) {
+                ItemStack stack=stacks[i];
+                if(stack!=null && PrestigeConfirmation.hypixelButton(title,stack.getDisplayName(),
+                        net.minecraft.item.Item.getIdFromItem(stack.getItem()),stack.getMetadata(),loreOf(stack))) {
+                    menuTransition.serverContents(container);
+                    break;
+                }
+            }
+        }
+        if(managedVisit) {
+            for(int i=0;i<(index<0?Math.min(stacks.length,size):stacks.length);i++) {
+                if(stacks[i]!=null&&LoadoutMenus.responseEvidence(kind,targetPerkName,stacks[i].getDisplayName(),loreOf(stacks[i]))){
+                    menuTransition.serverContents(container);
+                    if(kind.equals("confirm"))loadoutConfirmation.contents(container);
+                    break;
+                }
+            }
+        }
+        LoadoutPlanner.Kind type;
+        boolean root=kind.equals("upgrades")||kind.equals("killstreaks");
+        if(kind.equals("upgrades")||kind.equals("choosePerk"))type=LoadoutPlanner.Kind.PERK;
+        else if(kind.equals("killstreaks")||kind.equals("chooseStreak"))type=LoadoutPlanner.Kind.KILLSTREAK;
+        else return;
+        boolean[] seen=new boolean[type==LoadoutPlanner.Kind.PERK?4:2];
+        boolean anyResolved=false;
+        int count=index<0?Math.min(stacks.length,container.getLowerChestInventory().getSizeInventory()):1;
+        for(int i=0;i<count;i++) {
+            ItemStack stack=stacks[i];if(stack==null)continue;
+            String name=StringUtils.stripControlCodes(stack.getDisplayName()).trim();
+            java.util.List<String> lore=loreOf(stack);
+            if(root) {
+                int n=LoadoutMenus.slotNumber(type,name);
+                if(n<1||n>seen.length)continue;
+                seen[n-1]=true;
+                if(LoadoutPlanner.resolved(lore)){
+                    anyResolved=true;loadout.observeSlot(type,n,lore,com.nezurstandalone.control.Clock.millis());
+                    if(!managedVisit && !hasTemporaryPerkLease())loadout.retryVerifiedObservation(type,n);
+                }
+            } else loadout.observeChoice(type,name,lore);
+        }
+        // Empty/streaming packets are not proof that a profile lacks slots.
+        if(root && index<0 && anyResolved)for(int i=0;i<seen.length;i++)if(!seen[i])loadout.missingSlot(type,i+1);
+    }
+
+    private boolean managedActionReady() {
+        refreshLoadoutRequirements();
+        refreshLoadoutGold();
+        return loadout.next(null,com.nezurstandalone.control.Clock.millis())!=null;
+    }
+
+    private void handleManagedRoot(ContainerChest container,IInventory inv,LoadoutPlanner.Kind kind) {
+        long now=com.nezurstandalone.control.Clock.millis();
+        if(loadout.pending()!=null) {
+            // Menu return/ACK alone is insufficient. Only packet Selected lore completes the action.
+            if(loadout.pending().state==LoadoutPlanner.State.VERIFYING) {
+                if(System.nanoTime()-guiOpenStamp<1_500_000_000L)return;
+                failMenu("Requested loadout selection was not confirmed by server slot lore.");return;
+            }
+            loadout.blocked(now,"chooser returned without a verified action");
+        }
+        chooserSlot=null;
+        loadoutConfirmation.clear();
+        LoadoutPlanner.Slot next=loadout.next(null,now);
+        if(next!=null && next.kind==kind) {
+            int slot=findManagedSlotIndex(inv,kind,next.number);
+            if(slot<0){loadout.missingSlot(kind,next.number);return;}
+            java.util.List<String> lore=loreOf(inv.getStackInSlot(slot));
+            if(!LoadoutPlanner.resolved(lore)){failMenu("Server slot lore is unresolved.");return;}
+            // Cached equipment must agree with the live slot before a chooser is opened.
+            if(!LoadoutPlanner.selected(lore).equalsIgnoreCase(next.equipped)){
+                failMenu("Live equipment differs from authoritative cached slot evidence.");return;
+            }
+            if(!loadout.begin(next,now))return;
+            chooserSlot=next;targetPerkName=next.desired;
+            clickMenu(container,slot,kind==LoadoutPlanner.Kind.PERK?"choosePerk":"chooseStreak");return;
+        }
+        LoadoutPlanner.Kind other=kind==LoadoutPlanner.Kind.PERK?LoadoutPlanner.Kind.KILLSTREAK:LoadoutPlanner.Kind.PERK;
+        if(loadout.next(other,now)!=null) {
+            int route=findSlotByName(inv,kind==LoadoutPlanner.Kind.PERK?"Killstreaks":"Go Back");
+            if(route<0){failMenu("Cannot identify loadout menu route.");return;}
+            clickMenu(container,route,kind==LoadoutPlanner.Kind.PERK?"killstreaks":"upgrades");return;
+        }
+        finishNpcFlow();
+    }
+
+    private void handleManagedChooser(ContainerChest container,IInventory inv,String noneName) {
+        refreshLoadoutGold();
+        long now=com.nezurstandalone.control.Clock.millis();
+        LoadoutPlanner.Slot operation=loadout.pending();
+        if(operation==null || operation!=chooserSlot || !operation.desired.equalsIgnoreCase(targetPerkName)){
+            finishNpcFlow();return;
+        }
+        if(operation.state==LoadoutPlanner.State.VERIFYING) {
+            if(loadout.choiceSelectedAfterDispatch()) {
+                int back=findSlotByName(inv,"Go Back");
+                if(back<0){failMenu("Selection acknowledged; cannot return to verify the configured slot.");return;}
+                clickMenu(container,back,"upgrades","killstreaks");return;
+            }
+            if(!loadout.prepareOwnedSelection(now)) {
+                failMenu("Chooser returned without a verified free selection or equipped result.");return;
+            }
+            log("Purchase ownership verified; equipping "+targetPerkName+" for 0g.");
+        }
+        int found=-1;
+        String wanted=targetPerkName.equalsIgnoreCase("No Perk")?noneName:targetPerkName;
+        for(int i=0;i<inv.getSizeInventory();i++) {
+            ItemStack item=inv.getStackInSlot(i);if(item==null)continue;
+            if(StringUtils.stripControlCodes(item.getDisplayName()).trim().equalsIgnoreCase(wanted)){found=i;break;}
+        }
+        if(found<0){loadout.choiceMissing(operation.kind,targetPerkName);loadout.blocked(now,"exact configured choice absent");}
+        else {
+            java.util.List<String> lore=loreOf(inv.getStackInSlot(found));
+            // Re-read the exact live entry even if earlier packet evidence differed.
+            loadout.inspectChoice(operation.kind,wanted,lore);
+            if(loadout.canApply(now)) {
+                // Reserve only after the menu/cursor/lease guards allow native dispatch.
+                clickMenu(container,found,()->{
+                    loadout.applied(com.nezurstandalone.control.Clock.millis());
+                    loadoutConfirmation.begin(operation,container);
+                },LoadoutMenus.afterSelection(operation.kind));
+                return;
+            }
+            loadout.blocked(now,"live price, gold or availability prevents this action");
+        }
+        int back=findSlotByName(inv,"Go Back");
+        if(back>=0)clickMenu(container,back,"upgrades","killstreaks");else finishNpcFlow();
+    }
+
+    private void handleManagedConfirm(ContainerChest container,IInventory inv) {
+        refreshLoadoutGold();
+        LoadoutPlanner.Slot operation=loadout.pending();
+        if(operation==null || operation!=chooserSlot){finishNpcFlow();return;}
+        if(!loadoutConfirmation.matches(operation,container)) {
+            failMenu("Confirmation is not the server response to the configured chooser selection.");return;
+        }
+        loadout.confirmationOpened();
+        if(!loadout.canConfirm(com.nezurstandalone.control.Clock.millis())){
+            failMenu("Gold or eligibility changed before loadout confirmation.");return;
+        }
+        int confirm=findSlotByName(inv,"Confirm");
+        if(confirm<0){failMenu("Loadout confirmation is not identifiable.");return;}
+        // A generic Confirm need not repeat the item name: the chooser/server transition binds it.
+        java.util.List<String> lore=loreOf(inv.getStackInSlot(confirm));
+        if(!loadout.confirmationPriceMatches(lore)){
+            failMenu("Confirmation price differs from the validated selection.");return;
+        }
+        for(int i=0;i<inv.getSizeInventory();i++) {
+            ItemStack st=inv.getStackInSlot(i);
+            if(st==null)continue;
+            String name=LoadoutPlanner.normalize(StringUtils.stripControlCodes(st.getDisplayName()).trim());
+            if(!LoadoutConfirmation.labelsMatch(targetPerkName,loreOf(st))) {
+                failMenu("Confirmation identifies another loadout selection.");return;
+            }
+            if(loadout.entry(operation.kind,name)!=null&&!name.equalsIgnoreCase(targetPerkName)) {
+                failMenu("Confirmation preview identifies another loadout selection.");return;
+            }
+            if(name.equalsIgnoreCase(targetPerkName)) {
+                if(!loadout.confirmationPriceMatches(loreOf(st))){failMenu("Confirmed item's price differs from the validated choice.");return;}
+            }
+        }
+        // Commit before native dispatch; a subsequent lost response remains an ambiguous purchase.
+        if(clickMenu(container,confirm,()->loadout.confirmed(com.nezurstandalone.control.Clock.millis()),LoadoutMenus.afterConfirmation(operation.kind)))loadoutConfirmation.clear();
+    }
 
     private void refreshPerkAccount() {
         if (mc.thePlayer == null || mc.theWorld == null) return;
@@ -513,15 +794,15 @@ public class GrinderEngine extends Module implements DraggableHud {
         String identity = mc.thePlayer.getUniqueID().toString() + "@" + host;
         if (identity.equals(lastPerkUser)) return;
         lastPerkUser = identity;
+        loadoutSettingsDirty=true;
+        loadout.context(identity);
+        chooserSlot=null;
+        prestigeGold.clear();
         contractKungFuUnavailable = false;
-        deferredSyncGoldRequirement = Double.NaN;
-        deferredSyncGoldSignature = "";
-        deferredSyncGoldUntil = 0L;
         lastSeenLevel = -1;
-        perksNeedSync = ksNeedSync = true;
+        perksNeedSync = true;
         npcRetryAfterNanos = 0L;
         java.util.Arrays.fill(perkAttempted, false);
-        java.util.Arrays.fill(ksAttempted, false);
     }
 
     public static boolean isNpcNavigationActive() {
@@ -555,6 +836,8 @@ public class GrinderEngine extends Module implements DraggableHud {
     // Classic stays on one Pit server; a confirmed scoreboard level reset, not a lobby swap,
     // completes its prestige. Keep a pending barrier so a stale level 120 cannot retry.
     private boolean classicPrestigePending = false;
+    private final PrestigeGoldProgress prestigeGold = new PrestigeGoldProgress();
+    private long prestigeGoldLogAt;
     private long classicPrestigeStart = 0L;
     // Rate-limited, humanised right-clicks for NPC interacts and the dragon egg, plus a spacing
     // stamp so GUI slot clicks are never machine-gunned at the server.
@@ -605,29 +888,57 @@ public class GrinderEngine extends Module implements DraggableHud {
         super("AutoGrinder", "Autonomously grinds the Pit: fights mid, swaps thin lobbies, routes events.",
                 Category.AUTO);
         instance = this;
+        GuardedInput.label(interactionOwner,"AutoGrinder.Interaction");
+        GuardedInput.label(raffleInputOwner,"AutoGrinder.Raffle");
+        for(Perk p:PERKS)loadout.define(LoadoutPlanner.Kind.PERK,p.name,p.gold,p.minLevel,p.renown);
+        for(Perk p:KILLSTREAKS)loadout.define(LoadoutPlanner.Kind.KILLSTREAK,p.name,p.gold,p.minLevel,p.renown);
         com.nezurstandalone.control.SessionResets.register(this,this::resetSessionActivity);
+        addSettings(quickSetup,advancedSettings);
+        addSettings(combatOptions.settings());
+        quickSetup.addChangeListener(changed->{
+            if(com.nezurstandalone.settings.Setting.isRestoring())return;
+            String profile=quickSetup.getMode();if("Custom".equals(profile))return;
+            combatOptions.useKillAura.setEnabled(true);combatOptions.preset.setMode(profile);
+            autoWeapon.setEnabled(true);idleRetreat.setEnabled(true);onlyEventMode.setEnabled(false);
+            AutoHeal healing=com.nezurstandalone.Nezur.moduleManager==null?null:com.nezurstandalone.Nezur.moduleManager.getModuleByClass(AutoHeal.class);
+            if(healing!=null&&!healing.isToggled()){
+                if(mc.thePlayer==null||mc.theWorld==null)healing.setToggledFromConfig(true);
+                else healing.setToggled(true);
+            }
+        });
         addSettings(minMidPlayers, lobbySwap, lobbySwapDelay, autoWeapon, mysticPickup, idleRetreat,
                 spireMode, autoBlockhead, autoRobbery, autoRaffle, squadSupport, nightQuestSupport, autoPerk, perk1, perk2, perk3, perk4, theWay,
                 autoKillstreak, ks1, ks2,
-                autoPrestige, dragonEggSupport, muteGame,
+                autoPrestige, oofOnOverdrive, dragonEggSupport, muteGame,
                 breakTimeEnable, workDurationLimit, breakDurationLimit,
-                prioritizeHealth,ttkSpeed,ttkInterval,ttkDamage,ttkSwitch,ttkDebug, teamCheckTdm, botAttackReach, botCpsMin, botCpsMax,
-                combatAimSpeed, interactAimSpeed, onlyEventMode, showHud, hudAnimations, debugLogging);
+                aimSpeed, interactAimSpeed, onlyEventMode, showHud, hudScale, hudAnimations, debugLogging);
         for (final com.nezurstandalone.settings.PerkSetting b : perkBoxes()) {
             b.visibleOptions = () -> visiblePerksFor(b);
+            b.addChangeListener(s -> loadoutSettingsDirty=true);
         }
         for (final com.nezurstandalone.settings.PerkSetting b : ksBoxes()) {
             b.visibleOptions = () -> visibleStreaksFor(b);
+            b.addChangeListener(s -> loadoutSettingsDirty=true);
         }
-        autoPerk.addChangeListener(s -> updatePerkVisibility());
-        autoKillstreak.addChangeListener(s -> updatePerkVisibility());
+        autoPerk.addChangeListener(s -> {updatePerkVisibility();loadoutSettingsDirty=true;});
+        autoKillstreak.addChangeListener(s -> {updatePerkVisibility();loadoutSettingsDirty=true;});
+        theWay.addChangeListener(s -> loadoutSettingsDirty=true);
         updatePerkVisibility();
     }
 
     private void resetSessionActivity(){
+        mysticPickupPending=false;mysticPendingWorld=null;mysticPickupStarted=0;
+        if(tdmWorld!=mc.theWorld||!CombatAura.isTdmEventActive()){
+            tdmAssists.reset();tdmWasActive=false;tdmWorld=tdmPlayer=null;tdmSession=-1;
+        }else tdmAssists.invalidatePending();
+
+        hudSnapshot=null;hudSnapshotAt=0;hudFadeStart=0;
+        loadoutGold.clear();
+        overdriveOof.clear();
+        loadout.interrupt(com.nezurstandalone.control.Clock.millis(),"automation session reset");
+        loadout.invalidateGold();managedVisit=false;chooserSlot=null;
+        prestigeGold.suspend();
         blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
-        deferredSyncGoldRequirement=Double.NaN;deferredSyncGoldSignature="";deferredSyncGoldUntil=0L;
-        perkGoldPreflightDone=false;preflightPerkGoldCost=0.0;
         pauseGameplay();resetMenuTracking();combat.resetTargeting();PathfinderManager.clear(this,true);
         currentState=State.IDLE;combatPermitted=false;
         spireActive=false;spireActiveStartTime=0;spireEndStamp=0;lastCenterUpdate=0;centerX=centerZ=0;
@@ -639,7 +950,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         mysticStowAll=false;mysticStowRetryAt=0L;
         cancelMysticStow();
         prestigeSwapPending=prestigeLeftPit=prestigeConfirmStarted=classicPrestigePending=false;prestigeSwapStart=prestigeConfirmStamp=classicPrestigeStart=0;
-        refreshPerkAccount();java.util.Arrays.fill(perkAttempted,false);java.util.Arrays.fill(ksAttempted,false);
+        refreshPerkAccount();java.util.Arrays.fill(perkAttempted,false);
         npcClickRate.reset();eggClickRate.reset();
         com.nezurstandalone.control.CommandCoordinator.cancel(this);
     }
@@ -874,6 +1185,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     @Override
     protected void onEnable() {
         super.onEnable();
+        overdriveOof.reset();
         blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
         currentState = State.IDLE;
         combatPermitted = false;
@@ -894,11 +1206,9 @@ public class GrinderEngine extends Module implements DraggableHud {
         isOnBreak = false;
         spireActive = false;
         spireFocusPaused = false;
-        combat.ttk(ttkSpeed.value,ttkInterval.value,ttkDamage.value,ttkSwitch.value,ttkDebug.enabled);
-        combat.cps(botCpsMin.value, botCpsMax.value).reach(botAttackReach.value);
         if (sessionStartTime == 0L) sessionStartTime = com.nezurstandalone.control.Clock.millis();
-        hudAppear.value = 0f; hudAppear.velocity = 0f;
-        PathfinderManager.combatSettings(false,true,botAttackReach.value); // stacked mid: forward pressure only, no strafe
+        hudFadeStart=0;hudSnapshot=null;hudSnapshotAt=0;
+        PathfinderManager.combatSettings(false,true,activeCombatOptions().range()); // forward pressure only, no strafe
            // approach hops + occasional crit jumps
         prevWalkerSprint = com.nezurstandalone.pathfinder.PathfinderConfig.sprint.enabled;
         com.nezurstandalone.pathfinder.PathfinderConfig.sprint.enabled = true; // sprint the approach too
@@ -909,15 +1219,17 @@ public class GrinderEngine extends Module implements DraggableHud {
         // Fresh reconcile only when the account changed since the last sync. Same user + same
         // boxes = already equipped, skip the NPC trip entirely.
         refreshPerkAccount();
-        lastKsSig = ks1.getMode() + "|" + ks2.getMode();
-        lastPerkSig = perk1.getMode() + "|" + perk2.getMode() + "|" + perk3.getMode() + "|" + perk4.getMode();
     }
 
     @Override
     protected void onDisable() {
+        overdriveOof.clear();
+        loadout.interrupt(com.nezurstandalone.control.Clock.millis(),"AutoGrinder disabled during menu operation");
+        managedVisit=false;chooserSlot=null;
+        prestigeGold.clear();
         blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
         cancelMysticStow();
-        com.nezurstandalone.control.GrinderDiagnostics.setActive(false, new java.io.File(mc.mcDataDir, "logs/nezur-diagnostics"));
+        com.nezurstandalone.control.GrinderDiagnostics.setActive(false, new java.io.File(mc.mcDataDir, "logs/nezur-acg-diagnostics"));
         pauseGameplay();
         resetMenuTracking();
         combat.stop();
@@ -926,7 +1238,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         // regardless of what state the previous session left behind.
         com.nezurstandalone.pathfinder.PathfinderManager.resetIfAvailable(this);
         PathfinderManager.clear(this, true);
-        PathfinderManager.combatSettings(true,false,botAttackReach.value);
+        PathfinderManager.combatSettings(true,false,activeCombatOptions().range());
         PathfinderManager.clear(this,true);
         
         com.nezurstandalone.pathfinder.PathfinderConfig.sprint.enabled = prevWalkerSprint;
@@ -954,10 +1266,9 @@ public class GrinderEngine extends Module implements DraggableHud {
         releaseEventApproach();
         com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
         com.nezurstandalone.control.MovementKeys.release("grinder-npc");
-        pitClicker.reset();
-        GuardedInput.cancel(pitClickOwner);
         com.nezurstandalone.control.MovementKeys.release("grinder");
-        com.nezurstandalone.control.InventoryOwner.release(this, false);
+        if(mysticStowScreen==null || mc.currentScreen!=mysticStowScreen)
+            com.nezurstandalone.control.InventoryOwner.release(this, false);
         combatPermitted = false;
         com.nezurstandalone.contract.ContractCombatPolicy.noTarget();
         combat.stop();
@@ -983,32 +1294,21 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (!isToggled() || !combatPermitted) com.nezurstandalone.contract.ContractCombatPolicy.noTarget();
         else com.nezurstandalone.contract.ContractCombatPolicy.updateSneak();
         if (hasTemporaryPerkLease() && (contractKungFuRestoring || !contractKungFuReady)) {
-            pitClicker.reset();
-            GuardedInput.cancel(pitClickOwner);
             combat.stop();
             return;
         }
         // Render frames must obey the same correction barrier as client ticks and queued dispatch.
+        if(cancelledMysticStowScreen())return;
         if (correctionTick >= 0) {
             pauseGameplay();
             return;
         }
         // Egg interaction owns aim and clicks; cancel queued attacks before either click driver runs.
         if (hasDragonEggPriority()) {
-            pitClicker.reset();
-            GuardedInput.cancel(pitClickOwner);
             releaseCombat();
             combat.resetTargeting();
             return;
         }
-        // Region-scoped click pump runs even when target selection is empty or combat aim is paused.
-        if (canPitClick()) {
-            pitClicker.cps(botCpsMin.value, botCpsMax.value).onRenderFrame(true);
-        } else {
-            pitClicker.reset();
-            GuardedInput.cancel(pitClickOwner);
-        }
-
         if (!isToggled() || !combatPermitted || isOnBreak || isAutoBlockheadActive() || mc.thePlayer == null
                 || mc.theWorld == null || mc.currentScreen != null || mc.thePlayer.isDead
                 || mc.thePlayer.getHealth() <= 0 || !PathfinderManager.available(this)
@@ -1017,27 +1317,14 @@ public class GrinderEngine extends Module implements DraggableHud {
             combat.stop();
             return;
         }
-        combat.rotationSpeed((float) combatAimSpeed.value);
-        if (isAutoHealBusy()) { combat.onAimOnlyFrame(); return; }
         combat.onRenderFrame();
     }
 
-    private boolean shouldSyncOnLevelUp(int level) {
-        if (level == 10 || level == 35 || level == 70 || level == 75) return true;
-        if (level == 100 && !"No Perk".equals(perk4.getMode())) return true;
-        for (com.nezurstandalone.settings.PerkSetting box : perkBoxes()) {
-            Perk p = perkByName(box.getMode());
-            if (p != null && p.minLevel == level) return true;
-        }
-        for (com.nezurstandalone.settings.PerkSetting box : ksBoxes()) {
-            Perk p = perkByName(box.getMode());
-            if (p != null && p.minLevel == level) return true;
-        }
-        return false;
-    }
+    @SubscribeEvent
+    public void onCombatAttack(net.minecraftforge.event.entity.player.AttackEntityEvent event) { combat.attacked(event); }
 
     private boolean closeUnaffordablePerkMenu() {
-        if (mc.thePlayer == null || !(mc.currentScreen instanceof GuiChest)
+        if (managedVisit || mc.thePlayer == null || !(mc.currentScreen instanceof GuiChest)
                 || currentState != State.PERK_CLICKING_GUI) return false;
         GuiChest gui = (GuiChest) mc.currentScreen;
         if (!ownsMenu(gui)) return false;
@@ -1059,10 +1346,13 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     @SubscribeEvent
     public void onTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.START) return;
+        if (event.phase != TickEvent.Phase.START || !isToggled()) return;
+        if(mc.thePlayer!=null)hudStats.life(mc.thePlayer.isDead||mc.thePlayer.getHealth()<=0,com.nezurstandalone.control.Clock.millis());
+        if(refreshTdmContext())for(Entity entity:mc.theWorld.loadedEntityList)if(entity instanceof EntityPlayer)observeTdmLife((EntityPlayer)entity);
         if (!isToggled() || !combatPermitted) com.nezurstandalone.contract.ContractCombatPolicy.noTarget();
         else com.nezurstandalone.contract.ContractCombatPolicy.updateSneak();
         diagnosticTick();
+
         if (isToggled() && closeUnaffordablePerkMenu()) return;
         if (!PathfinderManager.available(this)) {
             releaseRaffleInteraction();releaseEventApproach();
@@ -1105,8 +1395,14 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     private void runGrinderTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.START) return;
+        if(isToggled()&&mc.currentScreen instanceof net.minecraft.client.gui.GuiDisconnected)AutoReconnect.enableRecovery();
         combatPermitted = false;
         if (engineWorld != mc.theWorld || enginePlayer != mc.thePlayer) {
+            if(wasDeadLastTick)overdriveOof.lifeEnded();else overdriveOof.clear();
+            loadout.interrupt(com.nezurstandalone.control.Clock.millis(),"world/player changed");
+            managedVisit=false;chooserSlot=null;
+            if(mc.theWorld==null){loadoutContext.disconnected(loadout);loadoutWorld=null;}
+            prestigeGold.suspend();
             blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
             pauseGameplay(); PathfinderManager.clear(this, true); resetMenuTracking(); combat.resetTargeting();
             engineWorld = mc.theWorld; enginePlayer = mc.thePlayer;
@@ -1118,7 +1414,11 @@ public class GrinderEngine extends Module implements DraggableHud {
             prestigeSwapPending=false;prestigeLeftPit=false;lastSeenLevel=-1;
             correctionTick = mc.thePlayer == null ? -1 : mc.thePlayer.ticksExisted;
         }
-        if (mc.thePlayer != null && (mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0)) wasDeadLastTick = true;
+        if(mc.thePlayer!=null && mc.theWorld!=null){refreshPerkAccount();refreshLoadoutRequirements();refreshLoadoutGold();}
+
+        if (mc.thePlayer != null && (mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0)) {
+            wasDeadLastTick = true;overdriveOof.lifeEnded();
+        }
         if (!isToggled() || mc.thePlayer == null || mc.theWorld == null
                 || mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0) {
             blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
@@ -1126,6 +1426,8 @@ public class GrinderEngine extends Module implements DraggableHud {
             resetMenuTracking();
             return;
         }
+
+        if(cancelledMysticStowScreen())return;
 
         if (correctionTick >= 0) {
             pauseGameplay();
@@ -1135,28 +1437,46 @@ public class GrinderEngine extends Module implements DraggableHud {
             correctionTick = -1;
             diagnosticSnapshot("CORRECTION_RESUME");
         }
-        combat.ttk(ttkSpeed.value,ttkInterval.value,ttkDamage.value,ttkSwitch.value,ttkDebug.enabled);
-        combat.cps(botCpsMin.value, botCpsMax.value).reach(botAttackReach.value);
-        PathfinderManager.combatSettings(false,true,botAttackReach.value);
+        PathfinderManager.combatSettings(false,true,activeCombatOptions().range());
         if (menuTransition.isPending() && menuTransition.failed(System.nanoTime())) { failMenu("Menu transition timed out."); return; }
         handleMuteGameTick();
 
         refreshPerkAccount();
         int currentLevel = Utils.getLevel();
-        if (currentLevel > 0 && currentLevel != lastSeenLevel) {
-            contractKungFuUnavailable = false;
-            if (lastSeenLevel != -1 && shouldSyncOnLevelUp(currentLevel)) {
-                if (autoPerk.isEnabled()) { perksNeedSync = true; java.util.Arrays.fill(perkAttempted, false); }
-                if (autoKillstreak.isEnabled()) { ksNeedSync = true; java.util.Arrays.fill(ksAttempted, false); }
-            }
-            lastSeenLevel = currentLevel;
+        double previousPrestigeGold=prestigeGold.earned();
+        if(currentLevel>0 && currentLevel<120)prestigeGold.clear();
+        if(isPitScoreboardTitle(Utils.getScoreboardTitle()) && currentLevel>=120 && !mc.thePlayer.isDead)
+            prestigeGold.observe(scoreboardGold());
+        else prestigeGold.suspend();
+        if(autoPrestige.isEnabled() && prestigeGold.known() && prestigeGold.earned()>previousPrestigeGold
+                && com.nezurstandalone.control.Clock.millis()-prestigeGoldLogAt>=30000) {
+            prestigeGoldLogAt=com.nezurstandalone.control.Clock.millis();
+            log("Prestige gold: "+formatGold(prestigeGold.earned())+"/"+formatGold(prestigeGold.required())
+                    +"g tracked; "+formatGold(prestigeGold.remaining())+"g left."
+                    +(prestigeGold.ready()?" Will verify at the NPC when back in spawn.":""));
+        }
+        if(currentLevel>0 && currentLevel!=lastSeenLevel) {
+            contractKungFuUnavailable=false;lastSeenLevel=currentLevel;
         }
 
-        // A perk box changed → sync the shop next chance (only matters while Auto Perk is on).
-        String psig = perk1.getMode() + "|" + perk2.getMode() + "|" + perk3.getMode() + "|" + perk4.getMode();
-        if (!psig.equals(lastPerkSig)) { lastPerkSig = psig; if (autoPerk.isEnabled()) { perksNeedSync = true; java.util.Arrays.fill(perkAttempted, false); } }
-        String ksig = ks1.getMode() + "|" + ks2.getMode();
-        if (!ksig.equals(lastKsSig)) { lastKsSig = ksig; if (autoKillstreak.isEnabled()) { ksNeedSync = true; java.util.Arrays.fill(ksAttempted, false); } }
+        refreshLoadoutRequirements();
+        loadout.evaluate(com.nezurstandalone.control.Clock.millis());
+
+        boolean overdriveInPit=isPitScoreboardTitle(Utils.getScoreboardTitle());
+        boolean overdriveInSpawn=Utils.isInSpawn();
+        if(overdriveOof.sidebar(Utils.getScoreboardLines(),oofOnOverdrive.isEnabled(),overdriveInPit,
+                overdriveInSpawn,false,com.nezurstandalone.control.Clock.millis()))log("Your sidebar shows Overdrive - /oof queued.");
+        boolean overdriveSafe=mc.currentScreen==null && com.nezurstandalone.control.GuiLease.available(this)
+                && !menuTransition.isPending() && !hasTemporaryPerkLease()
+                && !isAutoHealBusy() && !mc.thePlayer.isUsingItem()
+                && com.nezurstandalone.control.Clock.millis()>=throttleCooldownEnd;
+        if(overdriveOof.tick(oofOnOverdrive.isEnabled(),overdriveInPit,
+                overdriveInSpawn,false,overdriveSafe,com.nezurstandalone.control.Clock.millis(),
+                () -> {boolean sent=com.nezurstandalone.control.CommandCoordinator.send(this,"/oof");
+                    if(sent)log("Overdrive /oof sent.");return sent;})) {
+            pauseGameplay();PathfinderManager.clear(this,true);currentState=State.IDLE;
+            return;
+        }
 
         // Night-quest expiry / cancellation.
         if (nightQuestActive) {
@@ -1218,6 +1538,7 @@ public class GrinderEngine extends Module implements DraggableHud {
                 classicPrestigePending = false;
                 perksNeedSync = true;
                 java.util.Arrays.fill(perkAttempted, false);
+                loadout.resetEvidence();
                 log("Classic prestige level reset confirmed.");
                 finishNpcFlow();
                 return;
@@ -1256,6 +1577,8 @@ public class GrinderEngine extends Module implements DraggableHud {
 
         // Keep mystic gear out of the hotbar as soon as it fills, except while a contract lease
         // is being prepared or restored and must retain its path to the upgrades NPC.
+        if(classicRuntime() && currentState==State.PICKING_UP_MYSTIC && mysticPickupStack!=null
+                && countMatchingMystics(mysticPickupStack)>mysticInventoryBefore){finishMysticPickup();return;}
         if (!(hasTemporaryPerkLease() && (contractKungFuRestoring || !contractKungFuReady))
                 && startMysticStow()) return;
 
@@ -1264,6 +1587,13 @@ public class GrinderEngine extends Module implements DraggableHud {
             limboSentOnce = false;
         }
 
+        if(mysticPickupPending && (mysticPendingWorld!=mc.theWorld || com.nezurstandalone.control.Clock.millis()-lastMysticChatTime>30000))mysticPickupPending=false;
+        if(classicRuntime() && mysticPickupPending && mysticPickup.isEnabled() && !isBusyFlow()) {
+            mysticPickupPending=false;mysticPickupStarted=com.nezurstandalone.control.Clock.millis();
+            mysticRepathAt=lastMysticTraceTime=0L;sawMysticItem=false;mysticTargetId=-1;
+            mysticPickupStack=null;mysticMissingSince=0L;currentState=State.PICKING_UP_MYSTIC;
+            pauseGameplay();log("Mystic dropped - collecting it.");
+        }
         // A detected egg preempts combat and NPC navigation, except while a temporary perk lease
         // is being prepared or restored and must retain its path to the upgrades NPC.
         if (!isAutoBlockheadActive() && !isAutoRobberyActive() && !isAutoRaffleActive() && !isSpireActive() && dragonEggSupport.isEnabled() && !(hasTemporaryPerkLease()
@@ -1390,7 +1720,8 @@ public class GrinderEngine extends Module implements DraggableHud {
             return;
         }
 
-        if (zone.equals("Pit")) {
+        if (!inSpawn && (PitMapManager.isInCombatArea(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ)
+                || isRagePitEventActive() && !zone.equals("Sewer"))) {
             handlePit();
         } else if (inSpawn || currentState == State.LEAVING_SPAWN) {
             handleSpawn(); // hold W toward mid until we are actually in the pit
@@ -1503,40 +1834,69 @@ public class GrinderEngine extends Module implements DraggableHud {
         // false and cancels the walker's combat forward-press, so the bot would just stand and
         // stare. spawnWalkStart is zeroed by releaseSpawnWalk, so this runs a single time.
         if (spawnWalkStart != 0L) releaseSpawnWalk(true);
-        currentState = State.FIGHTING;
         oofCooldown = 0L;
         long now = com.nezurstandalone.control.Clock.millis();
-        EntityPlayer target = combat.pickTarget(AIM_FALLBACK_REACH, botAttackReach.value,
-                true, prioritizeHealth.isEnabled(), teamCheckTdm.isEnabled());
+        equipBestWeapon(); // Re-arm before KillAura applies its Weapons Only filter.
+        if(currentState==State.RETURNING_TO_MID && handleIdleReturn(now))return;
+        currentState = State.FIGHTING;
+        combatPermitted=true;
+        EntityPlayer target = combat.pickTarget();
         if (target != null) {
-            equipBestWeapon(); // idempotent + heal-gated: re-arms after a heal, never spams
             combatPermitted = true;
-            combat.setTarget(target);
             driveCombatMovement(target);
             lastAttackTime = now;
         } else {
             releaseCombat();
             combat.resetTargeting();
             combatMoveStuckSince = 0L;
-            if (idleRetreat.isEnabled() && now - lastAttackTime > 3000L) navigateToMid();
+            if (idleRetreat.isEnabled() && mayReturnToMid() && now - lastAttackTime > 3000L
+                    && Math.hypot(mc.thePlayer.posX,mc.thePlayer.posZ)>3.0) navigateToMid();
             else PathfinderManager.clear(this, true);
         }
+    }
+
+    /** Keep the mid route until arrival or a real nearby combat target; never chase a far fallback. */
+    private boolean handleIdleReturn(long now) {
+        if(!idleRetreat.isEnabled() || !mayReturnToMid() || Math.hypot(mc.thePlayer.posX,mc.thePlayer.posZ)<=3.0) {
+            releaseCombat();PathfinderManager.clear(this,true);currentState=State.FIGHTING;
+            lastAttackTime=now;
+            return false;
+        }
+        combatPermitted=true;
+        EntityPlayer nearby=combat.pickCombatTarget();
+        if(nearby!=null) {
+            // Cancel route ownership BEFORE arming direct chase. clear() stops the walker.
+            PathfinderManager.clear(this,true);
+            combatMoveStuckSince=0L;combatPathFailed=false;combatRepathAt=0L;
+            combatMoveProgressAt=now;combatMoveLastX=mc.thePlayer.posX;combatMoveLastZ=mc.thePlayer.posZ;
+            currentState=State.FIGHTING;
+            driveCombatMovement(nearby);lastAttackTime=now;
+            return true;
+        }
+        releaseCombat(); // Clears combat/camera demand while retaining an existing navigation route.
+        navigateToMid();
+        return true;
     }
 
     /**
      * Runs the bot straight at the target (the walker's combat block faces and sprints at it) with
      * no A* path - pathing to a moving player recomputed every tick, which drew that curving route
      * line and constantly re-found. Only when the direct chase is genuinely stuck - collided and
-     * not making ground for ~1.5s - does it hand off to the pathfinder to route around whatever is
+     * not making ground for ~0.6s - does it hand off to the pathfinder to route around whatever is
      * in the way, then snaps back to the straight chase the moment it is moving again.
      */
     private void driveCombatMovement(EntityPlayer target) {
         long now = com.nezurstandalone.control.Clock.millis();
+        if(isRagePitEventActive() && !"Pit".equals(PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ))) {
+            if(PathfinderManager.hasDestination())PathfinderManager.clear(this,true);
+            combatMoveStuckSince=0;combatPathFailed=false;
+            PathfinderManager.combatTarget(PathfinderManager.claim(this),target);return;
+        }
 
         // Someone is inside attack reach: there is nothing to path to - just fight them. Drop any
         // route immediately so none is computed or rendered while they are in range. The dragon
         // egg / perk / mystic flows run before combat and never reach here, so they keep their paths.
-        if (mc.thePlayer.getDistanceToEntity(target) <= botAttackReach.value + 0.5) {
+        if (combatMoveStuckSince==0L && !mc.thePlayer.isCollidedHorizontally && mc.thePlayer.getDistanceToEntity(target) <= activeCombatOptions().range() + 0.5) {
             combatMoveStuckSince = 0L;
             combatMoveProgressAt = now;
             // Clear BEFORE setting the combat target: clear() calls AutoWalker.stop() (active=false)
@@ -1553,7 +1913,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (Math.hypot(px - combatMoveLastX, pz - combatMoveLastZ) > 0.14) {
             combatMoveLastX = px; combatMoveLastZ = pz; combatMoveProgressAt = now;
         }
-        boolean stuck = mc.thePlayer.isCollidedHorizontally && now - combatMoveProgressAt > 1500L;
+        boolean stuck = mc.thePlayer.isCollidedHorizontally && now - combatMoveProgressAt > 600L;
 
         if (stuck || combatMoveStuckSince != 0L) {
             if (combatMoveStuckSince != 0L && (PathfinderManager.getState() == PathfinderManager.State.FAILED
@@ -1568,9 +1928,10 @@ public class GrinderEngine extends Module implements DraggableHud {
             // fall back to the direct chase rather than freezing in place.
             com.nezurstandalone.pathfinder.PathfinderManager.clearCombatTarget();
             if (combatMoveStuckSince == now) com.nezurstandalone.pathfinder.PathfinderManager.stopIfAvailable(this);
-            if (now >= combatRepathAt && !combatPathFailed && PathfinderManager.getState() != PathfinderManager.State.SEARCHING) {
+            if (now >= combatRepathAt && !combatPathFailed && PathfinderManager.getState() != PathfinderManager.State.SEARCHING
+                    && PathfinderManager.getState() != PathfinderManager.State.ACTIVE) {
                 PathfinderManager.walkTo(this, target.posX, target.posY, target.posZ, true);
-                combatRepathAt = now + 600L;
+                combatRepathAt = now + 300L;
                 // A path that was requested but never published (empty result leaves the
                 // walker inactive) means routing failed - give up on A* for this chase.
                 if (PathfinderManager.getState() == PathfinderManager.State.FAILED) {
@@ -1611,8 +1972,13 @@ public class GrinderEngine extends Module implements DraggableHud {
         }
     }
 
-    private void navigateToMid() {navigateContractMid(this);}
+    private void navigateToMid() {
+        if(!mayReturnToMid()){PathfinderManager.clear(this,true);currentState=State.FIGHTING;return;}
+        currentState=State.RETURNING_TO_MID;
+        navigateContractMid(this);
+    }
     public void navigateContractMid(Object owner) {
+        if(!mayReturnToMid()){PathfinderManager.clear(owner,true);return;}
         long now = com.nezurstandalone.control.Clock.millis();
         if (now < midRepathAt && PathfinderManager.isPathing()) return;
         midRepathAt = now + 1500L;
@@ -1658,7 +2024,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         blockheadOwned=true;
         long now=com.nezurstandalone.control.Clock.millis();
         isOnBreak=false;
-        releaseCombat();combat.resetTargeting();pitClicker.reset();GuardedInput.cancel(pitClickOwner);
+        releaseCombat();combat.resetTargeting();
         blockhead.begin(now);
         if(inSpawn) {blockheadEnteringMid=true;releaseEventApproach();blockhead.interrupted();handleSpawn();return;}
         if(spawnWalkStart!=0L)releaseSpawnWalk(true);
@@ -1752,11 +2118,13 @@ public class GrinderEngine extends Module implements DraggableHud {
         if(inSpawn) {releaseEventApproach();handleSpawn();return;}
         if(spawnWalkStart!=0L)releaseSpawnWalk(true);
         robbery.scan(now);
-        EntityPlayer target=combat.pickTarget(5,botAttackReach.value,true,true,teamCheckTdm.isEnabled(),robbery::canTarget,robbery::targetScore);
         currentState=State.ROBBERY_FIGHTING;
+        equipBestWeapon();
+        combatPermitted=true;
+        EntityPlayer target=combat.pickTarget();
         if(target!=null) {
             releaseEventApproach();
-            equipBestWeapon();combatPermitted=true;combat.setTarget(target);driveCombatMovement(target);lastAttackTime=now;
+            driveCombatMovement(target);lastAttackTime=now;
         } else {releaseCombat();combat.resetTargeting();approachEventMid();}
     }
 
@@ -1812,7 +2180,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             PathfinderManager.clear(this,true);
         }
         raffleOwned=true;isOnBreak=false;
-        releaseCombat();combat.resetTargeting();pitClicker.reset();GuardedInput.cancel(pitClickOwner);
+        releaseCombat();combat.resetTargeting();
         if(inSpawn) {raffleEnteringMid=true;putAwayRaffleTickets();handleSpawn();return;}
         if(spawnWalkStart!=0L)releaseSpawnWalk(true);
         if(raffleEnteringMid) {
@@ -2018,12 +2386,11 @@ public class GrinderEngine extends Module implements DraggableHud {
         } else if (currentState == State.SPIRE_FIGHTING) {
             long now = com.nezurstandalone.control.Clock.millis();
             // Spire: fight everyone in reach regardless of zone.
-            EntityPlayer target = combat.pickTarget(AIM_FALLBACK_REACH, botAttackReach.value,
-                    false, prioritizeHealth.isEnabled(), teamCheckTdm.isEnabled());
+            equipBestWeapon();
+            combatPermitted=true;
+            EntityPlayer target = combat.pickTarget();
             if (target != null) {
-                equipBestWeapon(); // idempotent + heal-gated
                 combatPermitted = true;
-                combat.setTarget(target);
                 driveCombatMovement(target);
                 lastAttackTime = now;
             } else { 
@@ -2095,6 +2462,8 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     // ---- lobby swap / reconnect --------------------------------------------
     private boolean shouldLobbySwap() {
+        if(AutoReconnect.holdLobbySwapForCarePackage())return false;
+
         if(com.nezurstandalone.contract.GoldPickupRecovery.ignoresPopulation(com.nezurstandalone.contract.ContractCombatPolicy.type()))return false;
         // Classic has no verified Hypixel lobby/rejoin command contract. Stay and grind.
         if (isClassicPitTitle(Utils.getScoreboardTitle())) return false;
@@ -2135,8 +2504,10 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private void handleLobbySwapInPit() {
-        if (com.nezurstandalone.contract.GoldPickupRecovery.ignoresPopulation(com.nezurstandalone.contract.ContractCombatPolicy.type())) {
-            currentState = State.IDLE; lobbyFirstCommand = false; squadSwapForced = false; return;
+        if(AutoReconnect.holdLobbySwapForCarePackage()){currentState=State.IDLE;squadSwapForced=false;return;}
+
+        if(com.nezurstandalone.contract.GoldPickupRecovery.ignoresPopulation(com.nezurstandalone.contract.ContractCombatPolicy.type())) {
+            currentState=State.IDLE;lobbyFirstCommand=false;squadSwapForced=false;return;
         }
         if (isClassicPitTitle(Utils.getScoreboardTitle())) { currentState = State.IDLE; return; }
         if (!squadSwapForced && !shouldLobbySwap()) { currentState = State.IDLE; lobbyFirstCommand = false; return; }
@@ -2145,7 +2516,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (now - lobbyStamp < delay || now < throttleCooldownEnd) return;
         if (Utils.isInSpawn()) {
             if (mc.currentScreen != null) closeCurrentScreen();
-            if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/l")) return;
+            if (!AutoReconnect.requestLobbySwap(this,this::isToggled)) return;
             lobbyFirstCommand = true;
             squadSwapForced = false;
             lobbyStamp = now;
@@ -2154,47 +2525,14 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     private void handleLobbyReconnect() {
         if (isClassicPitTitle(Utils.getScoreboardTitle())) { currentState = State.IDLE; return; }
-        releaseCombat();
-        PathfinderManager.clear(this, true);
-        long now = com.nezurstandalone.control.Clock.millis();
-        if (currentState == State.LOBBY_SWAP) {
-            long delay = lobbyFirstCommand ? (long) (lobbySwapDelay.value * 1000L) : 1000L;
-            if (now - lobbyStamp < delay || now < throttleCooldownEnd) return;
-            if (mc.currentScreen != null) closeCurrentScreen();
-            if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/play pit")) return;
-            lobbyFirstCommand = true;
-            lobbyStamp = now;
-            return;
-        }
-        if (currentState != State.LOBBY_RECONNECT && currentState != State.JOINING_PIT) {
-            currentState = State.LOBBY_RECONNECT;
-            reconnectStamp = now;
-        }
-        if (currentState == State.LOBBY_RECONNECT && now - reconnectStamp > 5000L) {
-            if (mc.currentScreen != null) closeCurrentScreen();
-            if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/play pit")) return;
-            currentState = State.JOINING_PIT;
-            reconnectStamp = now;
-        } else if (currentState == State.JOINING_PIT && now - reconnectStamp > 10000L) {
-            if (mc.currentScreen != null) closeCurrentScreen();
-            if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/play pit")) return;
-            reconnectStamp = now;
-        }
+        releaseCombat();PathfinderManager.clear(this,true);
+        AutoReconnect.enableRecovery();currentState=State.LOBBY_RECONNECT;
     }
 
     private void handleLimbo() {
         if (isClassicPitTitle(Utils.getScoreboardTitle())) { currentState = State.IDLE; return; }
-        releaseCombat();
-        PathfinderManager.clear(this, true);
-        long now = com.nezurstandalone.control.Clock.millis();
-        if (currentState != State.LIMBO) { currentState = State.LIMBO; limboSentOnce = false; reconnectStamp = now; }
-        long wait = limboSentOnce ? 10000L : 5000L;
-        if (now - reconnectStamp > wait) {
-            if (mc.currentScreen != null) closeCurrentScreen();
-            if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/l")) return;
-            limboSentOnce = true;
-            reconnectStamp = now;
-        }
+        releaseCombat();PathfinderManager.clear(this,true);
+        AutoReconnect.enableRecovery();currentState=State.LIMBO;
     }
 
     // ---- dragon egg ---------------------------------------------------------
@@ -2204,8 +2542,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     private final com.nezurstandalone.utils.NearestEggScan eggScan = new com.nezurstandalone.utils.NearestEggScan();
     private void scanDragonEgg() {
         long now = com.nezurstandalone.control.Clock.millis();
-        if (currentEgg != null && (!mc.theWorld.isBlockLoaded(currentEgg)
-                || mc.theWorld.getBlockState(currentEgg).getBlock() != Blocks.dragon_egg)) currentEgg=null;
+        if (currentEgg != null && !com.nezurstandalone.utils.DragonEggTracker.usable(currentEgg)) currentEgg=null;
         // The shared section index can take seconds to reach a nearby egg. A small loaded-only
         // local pass gives prompt mid detection without loading chunks or scanning the whole world.
         if (currentEgg == null && now >= eggScanStamp) {
@@ -2214,7 +2551,8 @@ public class GrinderEngine extends Module implements DraggableHud {
             double best=Double.MAX_VALUE;
             for(int x=-8;x<=8;x++)for(int z=-8;z<=8;z++)for(int y=-4;y<=4;y++) {
                 BlockPos at=origin.add(x,y,z);
-                if(mc.theWorld.isBlockLoaded(at) && mc.theWorld.getBlockState(at).getBlock()==Blocks.dragon_egg) {
+                if(mc.theWorld.isBlockLoaded(at) && mc.theWorld.getBlockState(at).getBlock()==Blocks.dragon_egg
+                        && com.nezurstandalone.utils.DragonEggTracker.usable(at)) {
                     double d=mc.thePlayer.getDistanceSq(at.getX()+0.5,at.getY()+0.5,at.getZ()+0.5);
                     if(d<best){best=d;currentEgg=at;}
                 }
@@ -2236,14 +2574,12 @@ public class GrinderEngine extends Module implements DraggableHud {
             // Preserve its forward/sprint/jump cadence until we have actually left spawn.
             com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
             GuardedInput.cancel(interactionOwner);
-            pitClicker.reset(); GuardedInput.cancel(pitClickOwner);
             RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
             handleSpawn();
             return;
         }
         boolean entering = currentState != State.DRAGON_EGG || !egg.equals(lastEggPos);
         currentState = State.DRAGON_EGG;
-        pitClicker.reset(); GuardedInput.cancel(pitClickOwner);
         releaseCombat(); combat.resetTargeting();
         long now = com.nezurstandalone.control.Clock.millis();
         if (entering) {
@@ -2359,7 +2695,7 @@ public class GrinderEngine extends Module implements DraggableHud {
                 && dragonEggSupport.isEnabled() && currentState==State.DRAGON_EGG
                 && PathfinderManager.available(this) && pos.equals(currentEgg)
                 && mc.theWorld.isBlockLoaded(pos)
-                && mc.theWorld.getBlockState(pos).getBlock() == Blocks.dragon_egg, eggClickRate::consume);
+                && com.nezurstandalone.utils.DragonEggTracker.usable(pos), eggClickRate::consume);
     }
 
     /** First raytraced point on the block visible from the eyes, or null. */
@@ -2386,8 +2722,11 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     // ---- mystic pickup ------------------------------------------------------
     private void handleMysticPickup() {
-        if (!mysticPickup.isEnabled()) { finishMysticPickup(); return; }
+        if (!mysticPickup.isEnabled() || classicRuntime() && com.nezurstandalone.control.Clock.millis()-mysticPickupStarted>30000) { finishMysticPickup(); return; }
         releaseCombat();
+        if (classicRuntime() && mysticPickupStack != null && countMatchingMystics(mysticPickupStack)>mysticInventoryBefore) {
+            finishMysticPickup();return;
+        }
         if (startMysticStow()) return;
         EntityItem target = findNearestMystic();
         long now = com.nezurstandalone.control.Clock.millis();
@@ -2413,7 +2752,12 @@ public class GrinderEngine extends Module implements DraggableHud {
             // Entity disappearance is not proof that our inventory received it. Allow the
             // server's inventory update to arrive, then leave only if the drop is truly gone.
             if (mysticMissingSince == 0L) mysticMissingSince = now;
-            if (now - mysticMissingSince > 5000L && now - lastMysticChatTime > 8000L)
+            if(classicRuntime()) {
+                PathfinderManager.clear(this,true);
+                com.nezurstandalone.control.MovementKeys.release("grinder");
+                RotationManager.getInstance().clearTarget(MOVEMENT_ROTATION_OWNER);
+                if(now-mysticMissingSince>=500L){finishMysticPickup();return;}
+            }else if (now - mysticMissingSince > 5000L && now - lastMysticChatTime > 8000L)
                 finishMysticPickup();
             if (now - lastMysticTraceTime > 1000L) {
                 lastMysticTraceTime = now;
@@ -2469,8 +2813,9 @@ public class GrinderEngine extends Module implements DraggableHud {
         for (ItemStack stack : mc.thePlayer.inventory.mainInventory) {
             if (stack != null && stack.getItem() == target.getItem()
                     && stack.getItemDamage() == target.getItemDamage()
-                    && ItemStack.areItemStackTagsEqual(stack, target)
-                    && stack.getDisplayName().equals(target.getDisplayName())) count += stack.stackSize;
+                    && (classicRuntime()?ClassicMysticPickup.same(net.minecraft.item.Item.getIdFromItem(stack.getItem()),stack.getItemDamage(),stack.getDisplayName(),
+                        net.minecraft.item.Item.getIdFromItem(target.getItem()),target.getItemDamage(),target.getDisplayName())
+                        :ItemStack.areItemStackTagsEqual(stack, target)&&stack.getDisplayName().equals(target.getDisplayName()))) count += stack.stackSize;
         }
         return count;
     }
@@ -2535,9 +2880,16 @@ public class GrinderEngine extends Module implements DraggableHud {
                 || com.nezurstandalone.control.Clock.millis() - mysticStowStarted > 6000L) {
             cancelMysticStow(); return;
         }
-        // Send one ordinary vanilla quick-move per client tick. WindowActions' multi-signal
-        // ACK wait was leaving this screen stuck after its first move on some Pit servers.
-        // The local container updates immediately, so the next tick picks the next mystic.
+        if(!com.nezurstandalone.control.GuiLease.owns(this) || !com.nezurstandalone.control.InventoryOwner.owns(this)){
+            cancelMysticStow();return;
+        }
+        try{if(!com.nezurstandalone.input.WindowActions.ready(this))return;}
+        catch(RuntimeException failure){
+            com.nezurstandalone.control.GrinderDiagnostics.capture("MYSTIC_STOW_UNKNOWN",failure.getMessage());
+            NotificationManager.show("[AutoGrinder] Inventory move unconfirmed. Inspect inventory before restarting.",5000);
+            setToggled(false);return;
+        }
+        // Vanilla prediction is confirmed by its exact S32; time alone cannot advance the batch.
         long now = com.nezurstandalone.control.Clock.millis();
         if (now - mysticStowStarted < 50L) return;
         int slot = findMysticStowSlot();
@@ -2548,8 +2900,8 @@ public class GrinderEngine extends Module implements DraggableHud {
             return;
         }
         try {
-            mc.playerController.windowClick(mc.thePlayer.inventoryContainer.windowId,
-                    slot + 36, 0, 1, mc.thePlayer);
+            com.nezurstandalone.input.WindowActions.click(this,mc.thePlayer.inventoryContainer.windowId,
+                    slot + 36,0,1);
             mysticStowStarted = now;
             com.nezurstandalone.control.GrinderDiagnostics.record("MYSTIC_STOW", "vanilla_quick_move hotbar="+slot);
         } catch (RuntimeException ex) {
@@ -2557,6 +2909,13 @@ public class GrinderEngine extends Module implements DraggableHud {
             mysticStowRetryAt = now + 3000L;
             cancelMysticStow();
         }
+    }
+    private boolean cancelledMysticStowScreen(){
+        if(mysticStowScreen==null || mc.currentScreen==mysticStowScreen)return false;
+        boolean pending=com.nezurstandalone.input.WindowActions.pending(this);cancelMysticStow();
+        if(!pending)return false;
+        NotificationManager.show("[AutoGrinder] Inventory closed before its result. Inspect inventory before restarting.",5000);
+        setToggled(false);return true;
     }
     private void cancelMysticStow() {
         com.nezurstandalone.input.WindowActions.cancel(this);
@@ -2576,7 +2935,10 @@ public class GrinderEngine extends Module implements DraggableHud {
         mysticPickupStack = null;
         mysticMissingSince = 0L;
         mysticTargetId = -1;
-        currentState = State.IDLE;
+        currentState = classicRuntime()&&!Utils.isInSpawn()?State.FIGHTING:State.IDLE;
+        if(classicRuntime()){
+            mysticRepathAt=0L;mysticPickupStarted=0L;
+        }
         PathfinderManager.clear(this, true);
         com.nezurstandalone.control.MovementKeys.release("grinder");
         RotationManager.getInstance().clearTarget(MOVEMENT_ROTATION_OWNER);
@@ -2588,10 +2950,14 @@ public class GrinderEngine extends Module implements DraggableHud {
             if (!(e instanceof EntityItem)) continue;
             EntityItem ei = (EntityItem) e;
             if (ei.isDead || ei.getEntityItem() == null || ei.getEntityItem().stackSize <= 0) continue;
+            if(classicRuntime()&&!ClassicMysticPickup.named(ei.getEntityItem().getDisplayName()))continue;
             double d = mc.thePlayer.getDistanceToEntity(ei);
             if (ei.getEntityId() == mysticTargetId && d < 48.0) return ei;
-            if (d > 35.0 || ei.ticksExisted > 120) continue;
+            if (d > 35.0) continue;
             boolean named = isMysticItem(ei);
+            String dropName=StringUtils.stripControlCodes(ei.getEntityItem().getDisplayName()).toLowerCase(java.util.Locale.ROOT);
+            boolean identified=dropName.contains("mystic")||dropName.contains("fresh")||dropName.contains("tier");
+            if(ei.ticksExisted>(classicRuntime()&&identified?1200:120))continue;
             net.minecraft.item.Item item = ei.getEntityItem().getItem();
             boolean gear = item instanceof ItemSword || item instanceof net.minecraft.item.ItemBow
                     || item instanceof net.minecraft.item.ItemArmor;
@@ -2628,49 +2994,32 @@ public class GrinderEngine extends Module implements DraggableHud {
     // validated interact, and sidestep to another spot if the menu never opens.
     // =========================================================================
     private boolean checkPerkTriggers() {
-        if (System.nanoTime() < npcRetryAfterNanos) return false;
-        if (!hasTemporaryPerkLease() && (!autoPerk.isEnabled() || !anySelected(perkBoxes()))) perksNeedSync = false;
-        if (!autoKillstreak.isEnabled() || !anySelected(ksBoxes())) ksNeedSync = false;
-        if (!perksNeedSync && (!ksNeedSync || hasTemporaryPerkLease())) return false;
-        if (!Utils.isInSpawn()) return false;
-        String goldSignature = syncGoldSignature();
-        long nowMs = com.nezurstandalone.control.Clock.millis();
-        if (nowMs < deferredSyncGoldUntil && goldSignature.equals(deferredSyncGoldSignature)) {
-            double balance = scoreboardGold();
-            if (Double.isNaN(balance) || balance + 0.000001 < deferredSyncGoldRequirement) {
-                logInsufficientSyncGold(deferredSyncGoldRequirement, balance);
-                return false;
-            }
-            deferredSyncGoldRequirement = Double.NaN;
-            deferredSyncGoldUntil = 0L;
-        }
-        log("Syncing " + (perksNeedSync ? "perks" : "killstreaks") + " - heading to UPGRADES NPC.");
-        pauseGameplay();
-        resetMenuTracking();
-        npcPosIndex = 0;
-        npcSpotStartedAt = 0L;
-        interactStamp = 0L;
-        navRepathAt = 0L;
-        currentState = State.PERK_NAVIGATING;
+        if (System.nanoTime() < npcRetryAfterNanos || !Utils.isInSpawn()
+                || !com.nezurstandalone.control.GuiLease.available(this) || !PathfinderManager.available(this)) return false;
+        boolean contract=hasTemporaryPerkLease();
+        if(contract) {
+            if(!perksNeedSync || contractKungFuReady && !contractKungFuRestoring)return false;
+        } else if(!managedActionReady())return false;
+        if(!com.nezurstandalone.control.GuiLease.acquire(this))return false;
+        log(contract?"Preparing contract-owned perk operation.":"Affordable/free loadout action queued - heading to UPGRADES NPC.");
+        pauseGameplay();resetMenuTracking();
+        if(!com.nezurstandalone.control.GuiLease.acquire(this))return false;
+        managedVisit=!contract;chooserSlot=null;
+        npcPosIndex=0;npcSpotStartedAt=interactStamp=navRepathAt=0L;
+        currentState=State.PERK_NAVIGATING;
         return true;
     }
 
-    private String syncGoldSignature() {
-        return perk1.getMode()+"|"+perk2.getMode()+"|"+perk3.getMode()+"|"+perk4.getMode()+"|"
-                +ks1.getMode()+"|"+ks2.getMode()+"|p="+perksNeedSync+"|k="+ksNeedSync;
-    }
-
-    private static boolean anySelected(com.nezurstandalone.settings.PerkSetting[] boxes) {
-        for (com.nezurstandalone.settings.PerkSetting b : boxes) if (!"No Perk".equals(b.getMode())) return true;
-        return false;
-    }
-
     private boolean startPrestigeProcess() {
+        if (!Utils.isInSpawn() || prestigeGold.known() && !prestigeGold.ready()) return false;
         if (System.nanoTime() < npcRetryAfterNanos) return false;
         if (findNpc(true) == null) return false;
-        log("Prestige available — heading to PRESTIGE NPC.");
+        // A blocked prestige request retains priority over upgrades and ordinary grinding.
+        if(!reserveNpcAccess())return true;
         pauseGameplay();
         resetMenuTracking();
+        if(!reserveNpcAccess())return true;
+        log("Prestige available — heading to PRESTIGE NPC.");
         npcPosIndex = 0;
         npcSpotStartedAt = 0L;
         interactStamp = 0L;
@@ -2682,30 +3031,30 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     /** Walk to a standing spot ~2 blocks from the NPC, then hand off to interaction. */
     private void handleNpcNavigation(boolean prestige) {
+        if(!prestige && managedVisit && !managedActionReady()) {
+            finishNpcFlow();return;
+        }
+        if(!reserveNpcAccess())return;
         Entity npc = findNpc(prestige);
         if (npc == null) { abortNpc("NPC vanished."); return; }
         if (!Utils.isInSpawn()) { abortNpc("Fell out of spawn."); return; }
 
         double[] off = NPC_OFFSETS[npcPosIndex % NPC_OFFSETS.length];
-        double sx = npc.posX;
-        double sz = npc.posZ;
+        double sx = npc.posX+off[0];
+        double sz = npc.posZ+off[1];
         double distToNpc = mc.thePlayer.getDistanceToEntity(npc);
+        double spotDistance=Math.hypot(mc.thePlayer.posX-sx,mc.thePlayer.posZ-sz);
 
         // Close enough to interact from: stop the walker completely and switch to aiming. This
         // fires on distance-to-NPC alone (any spot within reach), so a path that stops a little
         // short still hands off - the old 1.5-3.0 window could be missed and it never aimed.
-        if (distToNpc <= 0.45) {
+        if (distToNpc <= 3.0 && (npcPosIndex==0 && distToNpc<=2.5 || spotDistance<=1.5)) {
             com.nezurstandalone.pathfinder.PathfinderManager.stopIfAvailable(this);
             PathfinderManager.clear(this, true);
             com.nezurstandalone.control.MovementKeys.release("grinder-npc");
             interactStamp = com.nezurstandalone.control.Clock.millis();
             currentState = prestige ? State.PRESTIGE_INTERACTING : State.PERK_INTERACTING;
             return;
-        }
-        if(distToNpc<=2.0){
-            PathfinderManager.clear(this,true);float[] rot=RotationUtils.getRotations(npc,0,-0.35,0);
-            RotationManager.getInstance().setTargetRotation(INTERACTION_ROTATION_OWNER,RotationManager.PRIORITY_COMBAT,rot[0],rot[1],16,true);
-            com.nezurstandalone.control.MovementKeys.set("grinder-npc",mc.gameSettings.keyBindForward.getKeyCode(),Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(rot[0]-mc.thePlayer.rotationYaw))<20);
         }
         long now = com.nezurstandalone.control.Clock.millis();
         if (npcSpotStartedAt == 0L) npcSpotStartedAt = now;
@@ -2714,7 +3063,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             advanceNpcSpot(prestige);
             return;
         }
-        if (distToNpc>2.0 && now >= navRepathAt && !PathfinderManager.isPathing()) {
+        if (now >= navRepathAt && !PathfinderManager.isPathing()) {
             RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
             PathfinderManager.walkTo(this, sx, npc.posY, sz, true);
             navRepathAt = now + 1200L;
@@ -2723,6 +3072,10 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     /** Aim at the villager and open it with a crosshair-validated interact; retry from a new spot. */
     private void handleNpcInteract(boolean prestige) {
+        if(!prestige && managedVisit && !managedActionReady()) {
+            finishNpcFlow();return;
+        }
+        if(!reserveNpcAccess())return;
         Entity npc = findNpc(prestige);
         if (npc == null) { abortNpc("NPC vanished."); return; }
 
@@ -2749,14 +3102,19 @@ public class GrinderEngine extends Module implements DraggableHud {
 
         // Fire the interact only when the crosshair is genuinely on THIS villager, we are not
         // mid-dig, and the humanised rate allows it — the same safe gate ChestAura uses.
-        MovingObjectPosition look = mc.objectMouseOver;
         if (mc.thePlayer.getDistanceToEntity(npc)<=3.0 && !mc.playerController.getIsHittingBlock()) {
             if (npcClickRate.ready()) {
-                GuardedInput.attackCrosshair(interactionOwner, () -> isToggled() && !isAutoHealBusy()
-                        && (currentState == State.PERK_INTERACTING || currentState == State.PRESTIGE_INTERACTING));
-                {
-                    npcClickRate.consume(); npcInteractionUntilNanos = System.nanoTime() + 10_000_000_000L;
-                }
+                com.nezurstandalone.input.NpcInteractions.request(interactionOwner,npc, () -> isToggled() && !isAutoHealBusy()
+                        && currentState == (prestige ? State.PRESTIGE_INTERACTING : State.PERK_INTERACTING)
+                        && npc == findNpc(prestige));
+                GuardedInput.watch(interactionOwner,status->{
+                    if(status==GuardedInput.Status.NATIVE_INVOKED){
+                        npcClickRate.consume();npcInteractionUntilNanos=System.nanoTime()+10_000_000_000L;
+                    }
+                    if(status==GuardedInput.Status.NATIVE_INVOKED || status==GuardedInput.Status.DROPPED)
+                        com.nezurstandalone.control.GrinderDiagnostics.record("NPC_INPUT","status="+status+" npc="+npc.getEntityId()
+                                +" state="+currentState+" ray="+(mc.objectMouseOver==null?"none":mc.objectMouseOver.typeOfHit));
+                });
             }
         }
 
@@ -2769,8 +3127,9 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private void abortNpc(String why) {
+        if(managedVisit)loadout.deferVisit(com.nezurstandalone.control.Clock.millis(),why);
+        managedVisit=false;chooserSlot=null;
         npcRetryAfterNanos = Math.max(npcRetryAfterNanos, System.nanoTime() + 60_000_000_000L);
-        perkGoldPreflightDone=false;preflightPerkGoldCost=0.0;
         pauseGameplay();
         // Close only our active menu, BEFORE resetting state/ownership tracking.
         if (mc.thePlayer != null && mc.currentScreen instanceof GuiChest
@@ -2786,42 +3145,35 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private void finishNpcFlow() {
-        perkGoldPreflightDone=false;preflightPerkGoldCost=0.0;
+        loadout.interrupt(com.nezurstandalone.control.Clock.millis(),"menu closed before verified result");
+        managedVisit=false;chooserSlot=null;
+        boolean closeOwned=mc.thePlayer!=null && mc.currentScreen instanceof GuiChest
+                && ownsMenu((GuiChest)mc.currentScreen);
         pauseGameplay();
+        if(closeOwned)mc.thePlayer.closeScreen();
         resetMenuTracking();
-        if (mc.currentScreen != null) mc.thePlayer.closeScreen();
         PathfinderManager.clear(this, true);
-        // forever. It is reset only when a fresh sync is requested (enable / prestige / box change). targetPerkName = "No Perk";
+        targetPerkName = "No Perk";
         prestigeConfirmStarted = false;
         lastMenuTitle = "";
         currentState = State.LEAVING_SPAWN;
     }
 
-    /**
-     * The clickable villager under the "UPGRADES" / "PRESTIGE" nametag. Always a villager — the
-     * floating armor-stand nametag itself is never returned, because aiming at it would put the
-     * crosshair above the NPC and the interact would never validate. Returns null if no villager
-     * sits under the tag, so the flow aborts cleanly rather than clicking a nametag.
-     */
+    /** Resolve the exact NPC label and the living villager directly beneath it. */
     private Entity findNpc(boolean prestige) {
-        String tag = prestige ? "PRESTIGE" : "UPGRADES";
-        Entity nameTag = null;
-        for (Entity e : mc.theWorld.loadedEntityList) {
-            if (!(e instanceof EntityArmorStand) || !e.hasCustomName()) continue;
-            if (StringUtils.stripControlCodes(e.getCustomNameTag()).toUpperCase().contains(tag)) {
-                nameTag = e;
-                break;
+        if(mc.theWorld==null || mc.thePlayer==null)return null;
+        Entity best=null;double bestScore=Double.POSITIVE_INFINITY;
+        for(Entity label:mc.theWorld.loadedEntityList) {
+            if(label.isDead || !(label instanceof EntityArmorStand || label instanceof EntityVillager)
+                    || !label.hasCustomName() || !UpgradeNpcMatcher.matches(prestige,label.getCustomNameTag()))continue;
+            for(Entity candidate:mc.theWorld.loadedEntityList) {
+                if(!(candidate instanceof EntityVillager) || candidate.isDead)continue;
+                double score=UpgradeNpcMatcher.score(candidate.posX-label.posX,label.posY-candidate.posY,
+                        candidate.posZ-label.posZ,mc.thePlayer.getDistanceSqToEntity(candidate));
+                if(score<bestScore){best=candidate;bestScore=score;}
             }
         }
-        if (nameTag == null) return null;
-        Entity best = null;
-        double bestDist = 10.0; // the villager sits a few blocks under the floating tag
-        for (Entity v : mc.theWorld.loadedEntityList) {
-            if (!(v instanceof EntityVillager)) continue;
-            double d = nameTag.getDistanceToEntity(v);
-            if (d < bestDist) { bestDist = d; best = v; }
-        }
-        return best; // villager or null, never the nametag
+        return best;
     }
 
     // ---- perk GUI -----------------------------------------------------------
@@ -2830,6 +3182,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         prestigeMessage.cancel();
         com.nezurstandalone.control.GuiLease.release(this);
         menuTransition.clear();
+        loadoutConfirmation.clear();
         observedMenu = null;
         observedContents = "";
         lastMenuTitle = "";
@@ -2838,23 +3191,19 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private void failMenu(String reason) {
+        if(managedVisit&&mc.thePlayer!=null&&mc.thePlayer.openContainer instanceof ContainerChest) {
+            String title=((ContainerChest)mc.thePlayer.openContainer).getLowerChestInventory().getDisplayName().getUnformattedText();
+            log("Loadout stopped in '"+title+"' while handling "+targetPerkName+".");
+        }
         npcRetryAfterNanos = System.nanoTime() + 60_000_000_000L;
         NotificationManager.show("§e[AutoGrinder] " + reason + " Leaving the failed menu and resuming.", 5000);
         // Keep sync requested. An attempted click is not evidence of a successful purchase.
         java.util.Arrays.fill(perkAttempted, false);
-        java.util.Arrays.fill(ksAttempted, false);
         abortNpc(reason);
     }
 
     private String menuKind(String title) {
-        String name = StringUtils.stripControlCodes(title).toLowerCase(java.util.Locale.ROOT).trim();
-        if (name.contains("choose a killstreak")) return "chooseStreak";
-        if (name.contains("choose a perk")) return "choosePerk";
-        if (name.contains("permanent upgrades")) return "upgrades";
-        if (name.contains("prestige & renown") || name.contains("resets & renown")) return "prestige";
-        if (name.contains("are you sure") || name.equals("prestige?")) return "confirm";
-        if (name.contains("killstreak")) return "killstreaks";
-        return "unknown";
+        return LoadoutMenus.kind(title);
     }
 
     private boolean ownsMenu(GuiChest gui) {
@@ -2895,8 +3244,13 @@ public class GrinderEngine extends Module implements DraggableHud {
         String title = inv.getDisplayName().getUnformattedText();
         String contents = menuContents(inv);
         long now = System.nanoTime();
+        if(managedVisit&&loadoutConfirmation.matches(loadout.pending(),container))loadout.confirmationOpened();
         com.nezurstandalone.utils.MenuTransition.Result transition = menuTransition.observe(container,
                 menuKind(title), contents, now);
+        if(managedVisit&&transition==com.nezurstandalone.utils.MenuTransition.Result.CHANGED&&menuKind(title).equals("confirm")) {
+            loadoutConfirmation.transitioned(container);
+            if(loadoutConfirmation.matches(loadout.pending(),container))loadout.confirmationOpened();
+        }
         if ((transition == com.nezurstandalone.utils.MenuTransition.Result.TIMED_OUT || transition == com.nezurstandalone.utils.MenuTransition.Result.UNKNOWN)) {
             failMenu("Server did not confirm the menu action.");
             return false;
@@ -2914,6 +3268,10 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private boolean clickMenu(ContainerChest container, int slot, String... expected) {
+        return clickMenu(container,slot,null,expected);
+    }
+
+    private boolean clickMenu(ContainerChest container, int slot, Runnable beforeDispatch, String... expected) {
         IInventory inv = container.getLowerChestInventory();
         if (menuTransition.isPending() || container != mc.thePlayer.openContainer
                 || !(mc.currentScreen instanceof GuiChest)
@@ -2924,11 +3282,24 @@ public class GrinderEngine extends Module implements DraggableHud {
             return false;
         }
         if (!com.nezurstandalone.control.GuiLease.acquire(this)) return false;
+        if(beforeDispatch!=null)beforeDispatch.run();
         mc.playerController.windowClick(container.windowId, slot, 0, 0, mc.thePlayer);
         long now = System.nanoTime();
+        if(currentState==State.PRESTIGE_CLICKING_GUI && PrestigeConfirmation.serverMenu(
+                isClassicPitTitle(Utils.getScoreboardTitle()),menuKind(inv.getDisplayName().getUnformattedText()),expected)) {
+            // Hypixel may open Prestige? without S32 confirmation. Require the exact
+            // prestige button from guarded server inventory packets instead of a timer/ACK.
+            menuTransition.beginServerContents(container,"prestige",menuContents(inv),now,expected);
+            nextGuiClickNanos=now+nextGuiClickDelay()*1_000_000L;return true;
+        }
         // Classic opens a new server menu without a matching transaction acknowledgement.
         // Its first prestige step is accepted only when the expected confirmation menu appears;
         // Hypixel retains the separate authoritative transaction handling below.
+        if(expected.length>0&&managedVisit&&currentState==State.PERK_CLICKING_GUI) {
+            menuTransition.beginServerContents(container,menuKind(inv.getDisplayName().getUnformattedText()),
+                    menuContents(inv),now,expected);
+            nextGuiClickNanos=now+nextGuiClickDelay()*1_000_000L;return true;
+        }
         if (expected.length > 0 && (currentState == State.PERK_CLICKING_GUI
                 || (currentState == State.PRESTIGE_CLICKING_GUI
                     && isClassicPitTitle(Utils.getScoreboardTitle())))) {
@@ -2973,11 +3344,20 @@ public class GrinderEngine extends Module implements DraggableHud {
 
         if (!menuReady(gui)) return;
         String kind = menuKind(menu);
+        if(managedVisit && !hasTemporaryPerkLease()) {
+            if(kind.equals("upgrades"))handleManagedRoot(container,inv,LoadoutPlanner.Kind.PERK);
+            else if(kind.equals("killstreaks"))handleManagedRoot(container,inv,LoadoutPlanner.Kind.KILLSTREAK);
+            else if(kind.equals("choosePerk"))handleManagedChooser(container,inv,"No perk");
+            else if(kind.equals("chooseStreak"))handleManagedChooser(container,inv,"No killstreak");
+            else if(kind.equals("confirm"))handleManagedConfirm(container,inv);
+            else failMenu("Unexpected loadout menu.");
+            return;
+        }
 
         if (kind.equals("upgrades")) {
             handleUpgradesMenu(container, inv, now);
         } else if (kind.equals("killstreaks")) {
-            handleKillstreakMenu(container, inv, now);
+            finishNpcFlow();
         } else if (kind.equals("choosePerk")) {
             handleChooseMenu(container, inv, "No perk");
         } else if (kind.equals("chooseStreak")) {
@@ -3015,35 +3395,6 @@ public class GrinderEngine extends Module implements DraggableHud {
         }
         if (!inspectContractPerks(inv)) return;
         com.nezurstandalone.settings.PerkSetting[] boxes = perkBoxes();
-        double missingCost = contractKungFuRestoring ? 0.0 : missingPerkGoldCost(inv);
-        double balance = scoreboardGold();
-        if (Double.isNaN(missingCost)) {
-            logInsufficientSyncGold(missingCost, balance);
-            deferSyncForGold(missingCost);
-            npcRetryAfterNanos = System.nanoTime() + 15_000_000_000L;
-            finishNpcFlow();
-            return;
-        }
-        if (ksNeedSync && autoKillstreak.isEnabled() && !perkGoldPreflightDone
-                && !hasTemporaryPerkLease()) {
-            int ksIdx = findSlotByName(inv, "Killstreaks");
-            if (ksIdx >= 0) {
-                perkGoldPreflightDone = true;
-                preflightPerkGoldCost = missingCost;
-                log("Checking equipped killstreaks before calculating total purchase cost.");
-                clickMenu(container, ksIdx, "killstreaks");
-                return;
-            }
-            ksNeedSync = false;
-        }
-        if (missingCost > 0.0 && (Double.isNaN(balance)
-                || balance + 0.000001 < missingCost)) {
-            logInsufficientSyncGold(missingCost, balance);
-            deferSyncForGold(missingCost);
-            npcRetryAfterNanos = System.nanoTime() + 15_000_000_000L;
-            finishNpcFlow();
-            return;
-        }
         for (int i = 0; i < boxes.length; i++) {
             int slotIdx = findPerkSlotIndex(inv, i + 1);
             if (slotIdx < 0) {
@@ -3099,91 +3450,8 @@ public class GrinderEngine extends Module implements DraggableHud {
         openKillstreaksOrFinish(container, inv);
     }
 
-    /** Perks are done: step into the Killstreaks menu if streaks still need syncing, else leave. */
-    private void openKillstreaksOrFinish(ContainerChest container, IInventory inv) {
-        if (ksNeedSync && autoKillstreak.isEnabled() && !hasTemporaryPerkLease()) {
-            int ksIdx = findSlotByName(inv, "Killstreaks");
-            if (ksIdx >= 0) {
-                log("Opening killstreaks...");
-                clickMenu(container, ksIdx, "killstreaks");
-                lastMenuTitle = "";
-                return;
-            }
-            ksNeedSync = false; // no killstreak entry in this menu
-        }
-        finishNpcFlow();
-    }
-
-    /**
-     * Reconciles the two killstreak boxes. The slots are named "Perk Slot #1"/"#2" here exactly as
-     * in the perk menu, and the rest of the vocabulary - "Selected: X", the level lock, the
-     * availability wording - is identical, so the same readers are reused. The Megastreak entry in
-     * this menu is a different system and is never touched.
-     */
-    private void handleKillstreakMenu(ContainerChest container, IInventory inv, long now) {
-        if (!ksNeedSync || !autoKillstreak.isEnabled() || hasTemporaryPerkLease()) {
-            finishNpcFlow(); return;
-        }
-        com.nezurstandalone.settings.PerkSetting[] boxes = ksBoxes();
-        double missingCost = missingKillstreakGoldCost(inv);
-        double balance = scoreboardGold();
-        if (Double.isNaN(missingCost)) {
-            logInsufficientSyncGold(missingCost, balance);
-            deferSyncForGold(missingCost);
-            npcRetryAfterNanos = System.nanoTime() + 15_000_000_000L;
-            finishNpcFlow();
-            return;
-        }
-        if (perkGoldPreflightDone && perksNeedSync && autoPerk.isEnabled()) {
-            double totalMissing = preflightPerkGoldCost + missingCost;
-            if (Double.isNaN(balance) || balance + 0.000001 < totalMissing) {
-                logInsufficientSyncGold(totalMissing, balance);
-                deferSyncForGold(totalMissing);
-                npcRetryAfterNanos = System.nanoTime() + 15_000_000_000L;
-                finishNpcFlow();
-                return;
-            }
-            int back = findSlotByName(inv, "Go Back");
-            if (back < 0) { failMenu("Cannot return from gold precheck to apply selected perks."); return; }
-            clickMenu(container, back, "upgrades");
-            return;
-        }
-        if (missingCost > 0.0 && (Double.isNaN(balance)
-                || balance + 0.000001 < missingCost)) {
-            logInsufficientSyncGold(missingCost, balance);
-            deferSyncForGold(missingCost);
-            npcRetryAfterNanos = System.nanoTime() + 15_000_000_000L;
-            finishNpcFlow();
-            return;
-        }
-        for (int i = 0; i < boxes.length; i++) {
-            int slotIdx = findPerkSlotIndex(inv, i + 1);
-            if (slotIdx < 0) continue; // slot not present on this account
-            ItemStack st = inv.getStackInSlot(slotIdx);
-            java.util.List<String> lore = loreOf(st);
-            String equipped = selectedPerkFrom(lore);
-            if (equipped == null && loreHas(lore, "Required level")) {
-                ksAttempted[i] = false;
-                continue; // still level-locked
-            }
-            String want = boxes[i].getMode();
-            boolean wantNone = "No Perk".equalsIgnoreCase(want);
-            boolean matches = wantNone ? equipped == null
-                    : (equipped != null && equipped.equalsIgnoreCase(want));
-            if (matches) { ksAttempted[i] = false; continue; }
-            if (ksAttempted[i]) {
-                failMenu("Killstreak selection was not confirmed in server lore.");
-                return;
-            }
-            ksAttempted[i] = true;
-            targetPerkName = want;
-            log("Killstreak " + (i + 1) + ": " + (equipped == null ? "empty" : equipped) + " -> " + want);
-            clickMenu(container, slotIdx, "chooseStreak");
-            return;
-        }
-        if (System.nanoTime() - guiOpenStamp < 1_500_000_000L) return;
-        log("Killstreaks verified.");
-        ksNeedSync = false;
+    /** Contractor changes end their own lease flow; normal scheduling resumes independently. */
+    private void openKillstreaksOrFinish(ContainerChest container,IInventory inv) {
         finishNpcFlow();
     }
 
@@ -3257,8 +3525,14 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     // ---- menu reading helpers ----------------------------------------------
     private static final Pattern PERK_SLOT_NAME = Pattern.compile("Perk Slot #(\\d+)");
-    private static final Pattern MENU_GOLD_COST = Pattern.compile("(?:gold\\s+)?cost\\s*:?\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*g\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern SCOREBOARD_GOLD = Pattern.compile("Gold:\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)", Pattern.CASE_INSENSITIVE);
+
+    private int findManagedSlotIndex(IInventory inv,LoadoutPlanner.Kind kind,int number) {
+        for(int i=0;i<inv.getSizeInventory();i++) {
+            ItemStack item=inv.getStackInSlot(i);
+            if(item!=null&&LoadoutMenus.slotNumber(kind,item.getDisplayName())==number)return i;
+        }
+        return -1;
+    }
 
     /** Menu index of the "Perk Slot #n" item, or -1 when this account has no such slot. */
     private int findPerkSlotIndex(IInventory inv, int slotNumber) {
@@ -3317,11 +3591,11 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     /** Unknown cost or balance means no purchase click is sent. */
     private double menuCost(java.util.List<String> lore, String name) {
-        for (String line : lore) {
-            Matcher m = MENU_GOLD_COST.matcher(line);
-            if (m.find()) {
-                try { return Double.parseDouble(m.group(1).replace(",", "")); }
-                catch (NumberFormatException ignored) { return -1.0; }
+        for(String line:lore) {
+            String text=line.trim();
+            if(text.toLowerCase(java.util.Locale.ROOT).matches("(?:gold\\s+)?cost\\s*:.*")) {
+                double price=LoadoutPlanner.money(text.substring(text.indexOf(':')+1));
+                return Double.isFinite(price)?price:-1.0;
             }
         }
         Perk p = perkByName(name);
@@ -3330,63 +3604,11 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     private double scoreboardGold() {
-        for (String line : Utils.getScoreboardLines()) {
-            Matcher m = SCOREBOARD_GOLD.matcher(StringUtils.stripControlCodes(line));
-            if (m.find()) {
-                try { return Double.parseDouble(m.group(1).replace(",", "")); }
-                catch (NumberFormatException ignored) { return Double.NaN; }
-            }
-        }
-        return Double.NaN;
+        return LoadoutPlanner.scoreboardGold(Utils.getScoreboardLines());
     }
 
     private static String formatGold(double gold) {
         return String.format(java.util.Locale.ROOT, "%.2f", gold);
-    }
-
-    /** Add prices only for configured slots that are not already selected in the live menu. */
-    private double missingPerkGoldCost(IInventory inv) {
-        return missingSelectedGoldCost(inv, perkBoxes(), false);
-    }
-
-    private double missingKillstreakGoldCost(IInventory inv) {
-        return missingSelectedGoldCost(inv, ksBoxes(), true);
-    }
-
-    private double missingSelectedGoldCost(IInventory inv,
-            com.nezurstandalone.settings.PerkSetting[] boxes, boolean killstreak) {
-        double total = 0.0;
-        for (int i = 0; i < boxes.length; i++) {
-            int slot = findPerkSlotIndex(inv, i + 1);
-            if (slot < 0) continue;
-            java.util.List<String> lore = loreOf(inv.getStackInSlot(slot));
-            String equipped = selectedPerkFrom(lore);
-            if (equipped == null && loreHas(lore, "Required level")) continue;
-            String wanted = killstreak ? boxes[i].getMode() : contractDesiredPerk(i);
-            if ("No Perk".equalsIgnoreCase(wanted)
-                    || (equipped != null && equipped.equalsIgnoreCase(wanted))) continue;
-            Perk price = killstreak ? killstreakByName(wanted) : perkByName(wanted);
-            if (price == null) return Double.NaN;
-            total += price.gold;
-        }
-        return total;
-    }
-
-    private void logInsufficientSyncGold(double required, double balance) {
-        long now = com.nezurstandalone.control.Clock.millis();
-        if (now - lastPerkGoldGateLogAt < 15000L) return;
-        lastPerkGoldGateLogAt = now;
-        log("Skipping purchases: missing selections need "
-                + (Double.isNaN(required) ? "unknown gold" : formatGold(required) + "g")
-                + "; scoreboard shows "
-                + (Double.isNaN(balance) ? "no gold balance" : formatGold(balance) + "g") + ".");
-    }
-
-    private void deferSyncForGold(double required) {
-        if (Double.isNaN(required)) return;
-        deferredSyncGoldRequirement = required;
-        deferredSyncGoldSignature = syncGoldSignature();
-        deferredSyncGoldUntil = com.nezurstandalone.control.Clock.millis() + 90000L;
     }
 
     /** Lore lines of a stack with colour codes stripped; empty when it has none. */
@@ -3413,7 +3635,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         if (item == null || net.minecraft.item.Item.getIdFromItem(item.getItem()) != (confirm ? 159 : 264)
                 || (confirm && item.getMetadata() != 13)) return -1;
         java.util.List<String> lore = loreOf(item);
-        return loreHas(lore, confirm ? "Click to prestige!" : "Click to purchase!") ? slot : -1;
+        return (loreHas(lore,"Click to prestige!") || !confirm && loreHas(lore,"Click to purchase!")) ? slot : -1;
     }
 
     private void handlePrestigeGui(GuiChest gui) {
@@ -3424,6 +3646,14 @@ public class GrinderEngine extends Module implements DraggableHud {
         String kind = menuKind(inv.getDisplayName().getUnformattedText());
         boolean classic = isClassicPitTitle(Utils.getScoreboardTitle());
         if (kind.equals("prestige")) {
+            int prestigeSlot=findAction(inv,"Prestige","Prestige!","Prestige Now","Prestige Now!");
+            if(prestigeSlot>=0 && prestigeGold.read(loreOf(inv.getStackInSlot(prestigeSlot)),scoreboardGold())
+                    && !prestigeGold.ready()) {
+                log("Prestige needs "+formatGold(prestigeGold.remaining())+"g more grinded ("
+                        +formatGold(prestigeGold.earned())+"/"+formatGold(prestigeGold.required())+"g). Resuming grind.");
+                prestigeGoldLogAt=com.nezurstandalone.control.Clock.millis();
+                finishNpcFlow();return;
+            }
             int action = classic ? findClassicPrestigeAction(inv, false)
                     : findAction(inv, "Prestige", "Prestige!", "Prestige Now", "Prestige Now!");
             if (action < 0) { failMenu("Prestige action is not identifiable; no slot was clicked."); return; }
@@ -3435,7 +3665,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             }
             if (System.nanoTime() - prestigeConfirmStamp < 7_000_000_000L) return;
             int action = classic ? findClassicPrestigeAction(inv, true)
-                    : findAction(inv, "Confirm", "Confirm!", "Prestige", "Prestige!");
+                    : findHypixelPrestigeConfirmation(inv);
             if (action < 0) { failMenu("Prestige confirmation is not identifiable."); return; }
             // Hypixel waits for its chat acknowledgment; Classic waits for a scoreboard level reset.
             if (clickMenu(container, action) && classic) {
@@ -3492,43 +3722,42 @@ public class GrinderEngine extends Module implements DraggableHud {
     // ---- chat ---------------------------------------------------------------
     @SubscribeEvent
     public void onChat(ClientChatReceivedEvent event) {
-        if (!isToggled() || mc.thePlayer == null || engineWorld != mc.theWorld || enginePlayer != mc.thePlayer) return;
-        String msg = StringUtils.stripControlCodes(event.message.getUnformattedText());
-        if (event.type == 0 && autoBlockhead.isEnabled()) blockhead.chat(msg,com.nezurstandalone.control.Clock.millis());
-
-        if (event.type == 0 && isMysticDropMessage(msg)) {
-            com.nezurstandalone.control.GrinderDiagnostics.record("MYSTIC_CHAT",
-                    "state="+currentState+" busy="+isBusyFlow()+" enabled="+mysticPickup.isEnabled()
-                    +" message="+msg);
-            long now = com.nezurstandalone.control.Clock.millis();
-            if (now - lastMysticCountMs > 400L) {
-                lastMysticCountMs = now;
-                sessionMystics++;
-                if (mysticPickup.isEnabled() && !isBusyFlow()) {
-                    lastMysticChatTime = now;
-                    mysticRepathAt = 0L;
-                    lastMysticTraceTime = 0L;
-                    sawMysticItem = false;
-                    mysticTargetId = -1;
-                    mysticDropX = mc.thePlayer.posX;
-                    mysticDropY = mc.thePlayer.posY;
-                    mysticDropZ = mc.thePlayer.posZ;
-                    mysticPickupStack = null;
-                    mysticMissingSince = 0L;
-                    currentState = State.PICKING_UP_MYSTIC;
-                    log("Mystic dropped — picking it up at all costs!");
-                }
-            }
+        if (!isToggled() || mc.thePlayer == null) return;
+        boolean classic=classicRuntime();
+        String msg = com.nezurstandalone.utils.ChatEvents.plain(event);
+        if(classic)msg=msg.trim();
+        boolean serverText=com.nezurstandalone.control.ServerMessages.chatChannel(event.type,classic);
+        if(classic && serverText && GrinderHudStats.rewardMessage(msg)) {
+            Matcher xpM=XP_PATTERN.matcher(msg);while(xpM.find())try{sessionXP+=Integer.parseInt(xpM.group(1).replace(",",""));}catch(NumberFormatException ignored){}
+            Matcher goldM=GOLD_PATTERN.matcher(msg);while(goldM.find())try{sessionGold+=Double.parseDouble(goldM.group(1).replace(",",""));}catch(NumberFormatException ignored){}
+            Matcher renM=RENOWN_PATTERN.matcher(msg);while(renM.find())try{sessionRenown+=Double.parseDouble(renM.group(1).replace(",",""));}catch(NumberFormatException ignored){}
         }
+        if(classic&&serverText)sessionGold+=GrinderHudStats.pickupGold(msg);
+        if(classic && serverText && (isMysticDropMessage(msg)||msg.startsWith("NIGHT QUEST!")||msg.startsWith("DONE!")))
+            com.nezurstandalone.control.GrinderDiagnostics.record("SERVER_SIGNAL","channel="+event.type+" state="+currentState+" contextReady="+(engineWorld==mc.theWorld&&enginePlayer==mc.thePlayer)+" text="+msg);
+        if(serverText)hudStats.chat(msg,nightQuestActive,com.nezurstandalone.control.Clock.millis(),classic);
+        if (!classic && (engineWorld!=mc.theWorld||enginePlayer!=mc.thePlayer))return;
+        if(serverText && isMysticDropMessage(msg))recordMysticDrop(msg,classic,event.type);
 
-        Matcher xpM = XP_PATTERN.matcher(msg);
-        while (xpM.find()) { try { sessionXP += Integer.parseInt(xpM.group(1).replace(",", "")); } catch (Exception ignored) {} }
-        Matcher goldM = GOLD_PATTERN.matcher(msg);
-        while (goldM.find()) { try { sessionGold += Double.parseDouble(goldM.group(1).replace(",", "")); } catch (Exception ignored) {} }
-        Matcher renM = RENOWN_PATTERN.matcher(msg);
-        while (renM.find()) { try { sessionRenown += Double.parseDouble(renM.group(1).replace(",", "")); } catch (Exception ignored) {} }
+        if(engineWorld!=mc.theWorld||enginePlayer!=mc.thePlayer)return;
+        if(!classic && event.type==0){
+            Matcher xpM=XP_PATTERN.matcher(msg);while(xpM.find())try{sessionXP+=Integer.parseInt(xpM.group(1).replace(",",""));}catch(Exception ignored){}
+            Matcher goldM=GOLD_PATTERN.matcher(msg);while(goldM.find())try{sessionGold+=Double.parseDouble(goldM.group(1).replace(",",""));}catch(Exception ignored){}
+            Matcher renM=RENOWN_PATTERN.matcher(msg);while(renM.find())try{sessionRenown+=Double.parseDouble(renM.group(1).replace(",",""));}catch(Exception ignored){}
+        }
+        if(overdriveOof.message(msg,mc.thePlayer.getName(),oofOnOverdrive.isEnabled(),serverText,
+                com.nezurstandalone.control.Clock.millis()))log("Your OVERDRIVE activated - /oof queued.");
+        if(serverText && (currentState==State.PRESTIGE_NAVIGATING || currentState==State.PRESTIGE_INTERACTING || currentState==State.PRESTIGE_CLICKING_GUI)
+                && System.nanoTime()<npcInteractionUntilNanos && PrestigeGoldProgress.denied(msg)) {
+            prestigeGold.rejected(scoreboardGold());
+            abortNpc("Server rejected Prestige: more earned gold is required.");
+            return;
+        }
+        if(serverText)prestigeGold.reward(msg);
+        if (serverText && autoBlockhead.isEnabled()) blockhead.chat(msg,com.nezurstandalone.control.Clock.millis());
 
-        if (event.type==0 && com.nezurstandalone.control.ServerMessages.throttle(msg)) {
+        if (serverText && com.nezurstandalone.control.ServerMessages.throttle(msg)) {
+            overdriveOof.rejected(com.nezurstandalone.control.Clock.millis());
             throttleCooldownEnd = com.nezurstandalone.control.Clock.millis() + 15000L;
             log("Command throttle hit — backing off 15s.");
         }
@@ -3541,11 +3770,12 @@ public class GrinderEngine extends Module implements DraggableHud {
         // the reconnect flow /play pit us back with a refreshed level. Matches "PRESTIGE! <us>
         // unlocked prestige ...". Guard on it being us, and on not already swapping.
         String self = mc.thePlayer.getName();
-        if (!isClassicPitTitle(Utils.getScoreboardTitle()) && event.type == 0 && currentState == State.PRESTIGE_CLICKING_GUI && prestigeConfirmStarted
+        if (!isClassicPitTitle(Utils.getScoreboardTitle()) && serverText && currentState == State.PRESTIGE_CLICKING_GUI && prestigeConfirmStarted
                 && menuTransition.awaitingResponse(System.nanoTime()) && !prestigeSwapPending && self != null
                 && prestigeMessage.accept(prestigeMessageId,com.nezurstandalone.control.ClientSession.current(),currentState.name(),System.nanoTime(),
                     com.nezurstandalone.control.ServerMessages.prestige(msg,self))) {
             if (!menuTransition.completeResponse(System.nanoTime())) return;
+            loadout.resetEvidence();
             log("Prestige unlocked - lobby-swapping to refresh the level.");
             perksNeedSync = true; java.util.Arrays.fill(perkAttempted, false);
             prestigeSwapPending = true;
@@ -3556,22 +3786,24 @@ public class GrinderEngine extends Module implements DraggableHud {
             com.nezurstandalone.pathfinder.PathfinderManager.clearCombatTarget();
             PathfinderManager.clear(this, true);
             if (com.nezurstandalone.control.Clock.millis() >= throttleCooldownEnd) {
-                if (!com.nezurstandalone.control.CommandCoordinator.send(this, "/l")) return;
+                if (!AutoReconnect.requestLobbySwap(this,this::isToggled)) return;
             }
         }
 
         // Night quest lifecycle.
         if (nightQuestSupport.isEnabled()) {
-            if (event.type==0 && com.nezurstandalone.control.ServerMessages.questStart(msg)) {
+            if (serverText && com.nezurstandalone.control.ServerMessages.questStart(msg,classic)) {
+                hudStats.questStart(msg,classic);
                 nightQuestActive = true;
                 questMessageId=questMessage.begin(com.nezurstandalone.control.ClientSession.current(),"ACTIVE_QUEST",System.nanoTime(),36L*60*1_000_000_000L);
                 nightQuestStartTime = com.nezurstandalone.control.Clock.millis();
-                nextNightQuestTime = nightQuestStartTime + (36L * 60L * 1000L);
+                nextNightQuestTime = nightQuestStartTime + ((classic?20L:36L) * 60L * 1000L);
                 log("Night Quest started.");
             }
-            if (event.type==0 && nightQuestActive && questMessage.accept(questMessageId,com.nezurstandalone.control.ClientSession.current(),"ACTIVE_QUEST",System.nanoTime(),com.nezurstandalone.control.ServerMessages.questDone(msg))) {
+            if (serverText && nightQuestActive && questMessage.accept(questMessageId,com.nezurstandalone.control.ClientSession.current(),"ACTIVE_QUEST",System.nanoTime(),com.nezurstandalone.control.ServerMessages.questDone(msg,classic))) {
                 nightQuestActive = false;
                 sessionNightQuests++;
+                hudStats.questDone(msg,com.nezurstandalone.control.Clock.millis()-nightQuestStartTime);
                 log("Night Quest completed.");
             }
         }
@@ -3586,202 +3818,229 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     // =========================================================================
-    // HUD — glass panel in the ClickGUI language: a scale/fade intro, a travelling glass sweep,
-    // a state-tinted accent spine, a status dot that grows a live ring while fighting, per-row
-    // cascade, spring-smoothed counters, and a lag-damped target health bar.
+    // Compact, measured dashboard. Snapshot building runs at most four times/second.
     // =========================================================================
-    private static final float HUD_W = 188f;
-    private static final int GREEN = 0xFF3FB950, AMBER = 0xFFF0A63C, PURPLE = 0xFFA855F7,
-            PINK = 0xFFEC4899, CYAN = 0xFF56D4E0;
-
-    private static final class Spring {
-        float value, velocity;
-        Spring(float v) { this.value = v; }
-        void update(float target, float stiffness, float damping) {
-            float force = stiffness * (target - value) - damping * velocity;
-            velocity += force * 0.0166f;
-            value += velocity * 0.0166f;
-        }
-        void snap(float v) { value = v; velocity = 0f; }
-    }
+    private static final int GREEN = 0xFF69D7AD, AMBER = 0xFFF3C76B, PURPLE = 0xFFBAA3FF,
+            PINK = 0xFFEC88BC, CYAN = 0xFF77CFE2;
 
     @Override public String getHudKey() { return "autogrinder"; }
     @Override public boolean isHudVisible() { return isToggled() && showHud.isEnabled(); }
     @Override public double getDefaultHudX() { return 6; }
     @Override public double getDefaultHudY() { return 6; }
-    @Override public int getHudWidth() { return (int) HUD_W; }
-    @Override public int getHudHeight() { return 168; }
+    @Override public int getHudWidth() { return (int)Math.ceil(com.nezurstandalone.gui.GrinderDashboard.WIDTH*dashboardScale()); }
+    @Override public int getHudHeight() { return (int)Math.ceil(dashboard().height()*dashboardScale()); }
 
-    @SubscribeEvent
-    public void onRenderHud(RenderGameOverlayEvent.Post event) {
-        if (event.type != RenderGameOverlayEvent.ElementType.ALL) return;
-        if (!isToggled() || !showHud.isEnabled() || mc.thePlayer == null || mc.theWorld == null) return;
-        if (mc.currentScreen != null) return; // let the ClickGUI / menus own the screen
+    private float dashboardScale() {
+        float scale=(float)hudScale.value;
+        net.minecraft.client.gui.ScaledResolution screen=com.nezurstandalone.utils.ScreenScale.get();
+        return Math.max(.1f,Math.min(scale,Math.min((screen.getScaledWidth()-12f)/com.nezurstandalone.gui.GrinderDashboard.WIDTH,
+                (screen.getScaledHeight()-12f)/dashboard().height())));
+    }
 
-        boolean anim = hudAnimations.isEnabled();
-        if (anim) hudAppear.update(1f, 150f, 16f); else hudAppear.snap(1f);
-        float appear = GuiAnim.clamp01(hudAppear.value);
-        float ease = GuiAnim.outCubic(appear);
-        if (ease <= 0.01f) return;
-
-        // Live values → springs.
-        int mid = getMidPlayerCount();
-        Entity te = combat.getTarget();
-        EntityPlayer tp = (te instanceof EntityPlayer && !te.isDead && ((EntityPlayer) te).getHealth() > 0)
-                ? (EntityPlayer) te : null;
-        boolean fighting = tp != null
-                && PathfinderManager.available(this) && (currentState == State.FIGHTING || currentState == State.SPIRE_FIGHTING);
-        float hp = tp != null ? tp.getHealth() + tp.getAbsorptionAmount() : 0f;
-        float maxHp = tp != null ? Math.max(1f, tp.getMaxHealth()) : 20f;
-        if (anim) {
-            midSpring.update(mid, 170f, 22f);
-            mysticSpring.update(sessionMystics, 170f, 22f);
-            activitySpring.update(fighting ? 1f : 0f, 150f, 18f);
-            if (tp != null) { hpSpring.update(hp, 200f, 16f); hpLagSpring.update(hp, 55f, 12f); }
-        } else {
-            midSpring.snap(mid); mysticSpring.snap(sessionMystics);
-            activitySpring.snap(fighting ? 1f : 0f); hpSpring.snap(hp); hpLagSpring.snap(hp);
+    private com.nezurstandalone.gui.GrinderDashboard.Snapshot dashboard() {
+        long now=com.nezurstandalone.control.Clock.millis();
+        if(hudSnapshot!=null && now-hudSnapshotAt<250 && hudSnapshotWorld==mc.theWorld && hudSnapshotState==currentState)return hudSnapshot;
+        hudSnapshotAt=now;hudSnapshotWorld=mc.theWorld;hudSnapshotState=currentState;
+        com.nezurstandalone.gui.GrinderDashboard.Snapshot d=new com.nezurstandalone.gui.GrinderDashboard.Snapshot();
+        d.title=getName();d.state=prettyState(currentState);d.accent=stateColor(currentState);
+        long elapsed=sessionStartTime==0?0:Math.max(0,now-sessionStartTime);
+        double hours=Math.max(1.0/3600,elapsed/3600000.0);
+        d.uptime=GrinderHudStats.time(elapsed);
+        d.metrics.add(new com.nezurstandalone.gui.GrinderDashboard.Metric("XP EARNED",GrinderHudStats.number(sessionXP),hudRate(sessionXP,hours,elapsed),CYAN));
+        d.metrics.add(new com.nezurstandalone.gui.GrinderDashboard.Metric("GOLD EARNED",GrinderHudStats.number(sessionGold),hudRate(sessionGold,hours,elapsed),AMBER));
+        d.metrics.add(new com.nezurstandalone.gui.GrinderDashboard.Metric("FRESH DROPS",String.valueOf(sessionMystics),hudRate(sessionMystics,hours,elapsed),PURPLE));
+        if(CombatAura.isTdmEventActive())d.metrics.add(new com.nezurstandalone.gui.GrinderDashboard.Metric("ASSISTS",String.valueOf(hudStats.assists),hudRate(hudStats.assists,hours,elapsed),GREEN));
+        else if(nightQuestSupport.isEnabled())d.metrics.add(new com.nezurstandalone.gui.GrinderDashboard.Metric("QUESTS",String.valueOf(sessionNightQuests),"+"+hudStats.questVile+" Vile",GREEN));
+        else d.metrics.add(new com.nezurstandalone.gui.GrinderDashboard.Metric("KILLS",String.valueOf(hudStats.kills),hudRate(hudStats.kills,hours,elapsed),GREEN));
+        d.footer=hudStats.kills+" kills / "+hudStats.assists+" assists / "+hudStats.deaths+" deaths"
+                +(sessionRenown>0?" / +"+GrinderHudStats.number(sessionRenown)+" renown":"");
+        if(mc.theWorld==null||mc.thePlayer==null){d.activity="Waiting for a connected world";hudSnapshot=d;return d;}
+        java.util.List<String> lines=Utils.getScoreboardLines();
+        String zone=PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
+        String map=PitMapManager.getCurrentMap().name().toLowerCase(java.util.Locale.ROOT).replace('_',' ');
+        d.location=map+" / "+zone+" / Lv "+Utils.getLevel();
+        Entity entity=combat.getTarget();EntityPlayer target=entity instanceof EntityPlayer&&!entity.isDead?(EntityPlayer)entity:null;
+        if(target!=null&&target.getHealth()>0){
+            d.target=target.getName();
+            float hp=target.getHealth()+target.getAbsorptionAmount();
+            d.targetDetail=GrinderHudStats.number(hp)+" HP / "+String.format(java.util.Locale.ROOT,"%.1fm",mc.thePlayer.getDistanceToEntity(target));
+            d.health=hp/Math.max(1,target.getMaxHealth()+target.getAbsorptionAmount());
+        }else if(hasDragonEggPriority()){
+            d.target="Dragon Egg";d.targetDetail="interacting";d.health=1;
         }
+        d.activity=hudActivity(now);
+        double wallet=LoadoutPlanner.scoreboardGold(lines);
+        d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Health",GrinderHudStats.number(mc.thePlayer.getHealth()+mc.thePlayer.getAbsorptionAmount())+" HP",GuiTheme.TEXT));
+        d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Gold",(Double.isFinite(wallet)?String.format(java.util.Locale.ROOT,"%,.2fg",wallet):"Unknown"),AMBER));
+        d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Streak",String.valueOf(Utils.getStreak()),CYAN));
+        d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Mid players",String.valueOf(getMidPlayerCount()),GuiTheme.TEXT));
+        if(nightQuestSupport.isEnabled()&&hudStats.questXP>0&&!nightQuestActive)d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Quest rewards","+"+GrinderHudStats.number(hudStats.questXP)+" XP / "+hudStats.questVile+" Vile",PURPLE));
+        if(sessionRenown>0)d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Renown","+"+GrinderHudStats.number(sessionRenown)+" / "+hudRate(sessionRenown,hours,elapsed),AMBER));
+        if(target!=null&&(isAutoHealBusy()||correctionTick>=0||isOnBreak))
+            d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Paused",d.activity,AMBER));
+        else if(target!=null)d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Movement",hudMovement(),GuiTheme.TEXT_MUTED));
+        else if(!d.activity.equals(hudMovement()) && PathfinderManager.hasDestination())
+            d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Movement",hudMovement(),GuiTheme.TEXT_MUTED));
 
-        int accent = stateColor(currentState);
-        String eventName = activeEventName();
-        int eventColor = activeEventColor();
-
-        // Row set (label, value, colour, kind). kind 0 = text, 1 = mid bar, 2 = hp bar.
-        java.util.List<String[]> rows = new java.util.ArrayList<String[]>();
-        rows.add(new String[]{"STATE", prettyState(currentState)});
-        rows.add(new String[]{"MID", String.valueOf(Math.round(midSpring.value))});
-        rows.add(new String[]{"TARGET", hasDragonEggPriority() ? "Dragon Egg" : tp != null ? tp.getName() : "scanning"});
-        double hrs = Math.max(5.0 / 3600.0, (com.nezurstandalone.control.Clock.millis() - sessionStartTime) / 3600000.0);
-        rows.add(new String[]{"XP/HR", fmtRate(sessionXP / hrs)});
-        rows.add(new String[]{"GOLD/HR", fmtRate(sessionGold / hrs)});
-        rows.add(new String[]{"RENOWN/HR", fmtRate(sessionRenown / hrs)});
-        rows.add(new String[]{"MYST/HR", fmtRate(sessionMystics / hrs)});
-        rows.add(new String[]{"UPTIME", uptime()});
-        rows.add(new String[]{"EVENT", eventName});
-
-        float pad = 8f, headerH = 22f, rowH = 13f;
-        float bodyH = rows.size() * rowH;
-        boolean breakBar = breakTimeEnable.isEnabled();
-        float h = headerH + pad + bodyH + (breakBar ? 12f : 0f) + pad - 2f;
-
-        int x = getRenderX();
-        int y = getRenderY();
-
-        GlStateManager.pushMatrix();
-        GlStateManager.translate(x, y, 0f);
-        float sc = 0.95f + 0.05f * ease;                 // gentle scale-in
-        GlStateManager.translate(0f, (1f - ease) * -6f, 0f); // slide down as it settles
-        GlStateManager.scale(sc, sc, 1f);
-        GuiDraw.resetState();
-
-        // Panel: shadow, glass, travelling sweep.
-        GuiDraw.shadow(0, 0, HUD_W, h, GuiTheme.PANEL_RADIUS, 5, (int) (120 * ease));
-        GuiDraw.glass(0, 0, HUD_W, h, GuiTheme.PANEL_RADIUS, GuiTheme.GLASS_BODY, GuiTheme.GLASS_BORDER, 1f, ease);
-        GuiDraw.glassSweep(0, 0, HUD_W, h, GuiTheme.PANEL_RADIUS, GuiAnim.wrap(7f) / 7f,
-                GuiTheme.GLASS_SWEEP, ease * 0.9f);
-
-        // Accent spine, breathing with the state colour.
-        float spinePulse = 0.75f + 0.25f * GuiAnim.pulse(1.6f);
-        GuiDraw.roundedRect(1.5f, 4f, 3f, h - 4f, 0.75f, GuiDraw.withAlpha(accent, ease * spinePulse));
-
-        // Header: glowing status dot with a combat ring, title, state pill.
-        float dotX = 12f, dotY = headerH / 2f;
-        float act = GuiAnim.clamp01(activitySpring.value);
-        float dotPulse = 0.7f + 0.3f * GuiAnim.pulse(1.2f);
-        GuiDraw.glow(dotX, dotY, 6.5f * dotPulse, GuiDraw.withAlpha(accent, 0.42f * ease), 4);
-        if (act > 0.02f) {
-            float ringR = 4.5f + 3.5f * GuiAnim.pulse(0.9f);
-            GuiDraw.ring(dotX, dotY, ringR, 1.1f, GuiDraw.withAlpha(accent, 0.5f * act * ease));
+        String event=activeEventName();
+        if(event.equals("—")){
+            String live=hudField(lines,"Event");
+            if(!live.isEmpty())event=live;
         }
-        GuiDraw.circle(dotX, dotY, 2.6f, GuiDraw.withAlpha(accent, ease));
-
-        GuiDraw.textScaled("AutoGrinder", 18f, (headerH - 8f) / 2f + 0.5f, 0.95f,
-                GuiDraw.withAlpha(GuiTheme.TEXT, ease), false);
-
-        String badge = prettyState(currentState).toUpperCase();
-        float bw = GuiDraw.textWidthScaled(badge, 0.62f) + 9f;
-        float bx = HUD_W - bw - 7f, by = (headerH - 10f) / 2f;
-        GuiDraw.roundedRect(bx, by, bx + bw, by + 10f, 3f,
-                GuiDraw.withAlpha(GuiDraw.lerpColor(GuiTheme.CHIP_BG, accent, 0.22f), ease),
-                GuiDraw.withAlpha(GuiDraw.alpha(accent, 0xB0), ease));
-        GuiDraw.textScaled(badge, bx + 4.5f, by + 2f, 0.62f, GuiDraw.withAlpha(accent, ease), false);
-
-        GuiDraw.rect(5f, headerH, HUD_W - 5f, headerH + 0.75f, GuiDraw.withAlpha(GuiTheme.SEPARATOR, ease));
-
-        // Body rows, each cascading in.
-        float ry = headerH + pad - 2f;
-        int n = rows.size();
-        for (int i = 0; i < n; i++) {
-            String[] row = rows.get(i);
-            float rowT = GuiAnim.outCubic(GuiAnim.stagger(ease, i, n, 0.55f));
-            float rowA = ease * rowT;
-            float slide = (1f - rowT) * 8f;
-
-            GuiDraw.textScaled(row[0], pad + slide, ry, 0.72f, GuiDraw.withAlpha(GuiTheme.TEXT_MUTED, rowA), false);
-
-            boolean isTargetRow = row[0].equals("TARGET") && tp != null;
-            boolean isMidRow = row[0].equals("MID");
-            int valColor = row[0].equals("STATE") ? accent
-                    : row[0].equals("EVENT") ? eventColor
-                    : GuiTheme.TEXT;
-
-            if (isTargetRow) {
-                // Name + a lag-damped HP bar under the value.
-                float vw = GuiDraw.textWidthScaled(row[1], 0.8f);
-                float vx = HUD_W - pad - vw;
-                GuiDraw.textFitScaled(row[1], vx, ry, 0.8f, vw, GuiDraw.withAlpha(GuiTheme.TEXT, rowA), false);
-                float barY = ry + 8.5f, bx1 = pad + slide, bx2 = HUD_W - pad;
-                GuiDraw.roundedRect(bx1, barY, bx2, barY + 2.4f, 1.2f, GuiDraw.withAlpha(0x33FFFFFF, rowA));
-                float lagPct = GuiAnim.clamp01(hpLagSpring.value / maxHp);
-                float hpPct = GuiAnim.clamp01(hpSpring.value / maxHp);
-                int hpCol = GuiDraw.lerpColor(GuiTheme.DANGER, GREEN, hpPct);
-                if (lagPct > hpPct) {
-                    GuiDraw.roundedRect(bx1, barY, bx1 + (bx2 - bx1) * lagPct, barY + 2.4f, 1.2f,
-                            GuiDraw.withAlpha(0x66FFFFFF, rowA));
+        if(!event.equals("—")&&!event.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z]","").contains("nightquest")){
+            int color=activeEventColor();if(color==GuiTheme.TEXT_MUTED)color=CYAN;
+            com.nezurstandalone.gui.GrinderDashboard.Section panel=new com.nezurstandalone.gui.GrinderDashboard.Section(event,"LIVE",color);
+            if(event.toLowerCase(java.util.Locale.ROOT).contains("spire")){
+                String floor=hudField(lines,"Floor","Your Floor","Spire Floor");
+                if(!floor.isEmpty())panel.row("Floor",floor);
+                panel.row("Plan",currentState==State.SPIRE_FIGHTING?"Fight on current floor":prettyState(currentState));
+                int start=SpireEntryPolicy.startSeconds(BossStatus.bossName,BossStatus.statusBarTime);
+                if(start>=0)panel.row("Starts in",GrinderHudStats.time(start*1000L));
+                if(spireActiveStartTime>0)panel.row("Elapsed",GrinderHudStats.time(now-spireActiveStartTime));
+            }else if(event.toLowerCase(java.util.Locale.ROOT).contains("squad")){
+                int rank=squadRank();
+                if(rank>0)panel.progress("Your rank","#"+rank+" / stay top 7",Math.max(0,(8f-rank)/7f));
+                panel.row("Plan",squadSwapForced?"Lobby swap requested":rank>0&&rank<=7?"Hold position":lowMidTracking?"Checking rank":"Waiting for rank");
+                if(lowMidTracking)panel.row("Swap check",GrinderHudStats.time(Math.max(0,8000-(now-lowMidStamp))));
+            }else if(event.toLowerCase(java.util.Locale.ROOT).contains("raffle")){
+                panel.progress("Held tickets",raffle.tickets()+" / 9 to deposit",raffle.tickets()/9f);
+                panel.row("Plan",prettyState(currentState));
+                if(rafflePathTicket!=Integer.MIN_VALUE)panel.row("Ticket target","Following a dropped ticket");
+            }else if(event.toLowerCase(java.util.Locale.ROOT).contains("robbery")){
+                int rank=-1;for(String line:lines){int value=RobberyController.rank(line);if(value>0){rank=value;break;}}
+                if(rank>0)panel.row("Your rank","#"+rank);
+                panel.row("Plan",robbery.holding()?"Protect winnings / hold top 20":"Hunt toward top 10");
+                panel.row("Movement",prettyState(currentState));
+            }else if(event.toLowerCase(java.util.Locale.ROOT).contains("blockhead")){
+                panel.row("Plan",prettyState(currentState));
+                BlockheadController.Goal goal=blockhead.observedGoal();
+                if(goal!=null){
+                    panel.row("Target",goal.kind==BlockheadController.GoalKind.PAINT?"Paint fresh ground":goal.pickup.name().toLowerCase(java.util.Locale.ROOT).replace('_',' '));
+                    if(goal.cooldown>0)panel.row("Respawn",String.format(java.util.Locale.ROOT,"%.1fs",goal.cooldown));
                 }
-                if (hpPct > 0f) {
-                    GuiDraw.roundedRect(bx1, barY, bx1 + (bx2 - bx1) * hpPct, barY + 2.4f, 1.2f,
-                            GuiDraw.withAlpha(hpCol, rowA));
+                panel.row("Powerups seen",String.valueOf(blockhead.observedPowerupCount()));
+                if(blockhead.quicktrailRemaining(now)>0)panel.progress("Quicktrail",GrinderHudStats.time(blockhead.quicktrailRemaining(now)),blockhead.quicktrailRemaining(now)/20000f);
+                if(BlockheadController.diamond(mc.thePlayer))panel.row("Armor","Diamond equipped",GREEN);
+            }else if(event.equalsIgnoreCase("TDM")||event.toLowerCase(java.util.Locale.ROOT).contains("team deathmatch")){
+                panel.row("Strategy","One hit per opponent life");
+                panel.row("Tagged players",String.valueOf(tdmAssists.aliveTagged()));
+                panel.row("Total tags",String.valueOf(tdmAssists.totalTags()));
+                panel.row("Assists",String.valueOf(Math.max(0,hudStats.assists-tdmAssistBaseline)));
+                panel.row("Team check","Automatic");
+            }else if(event.equals("Dragon Egg")){
+                panel.row("Plan","Aim + interact; ignore if still 25s");
+                if(currentEgg!=null)panel.row("Distance",String.format(java.util.Locale.ROOT,"%.1fm",mc.thePlayer.getDistance(currentEgg.getX()+.5,currentEgg.getY()+.5,currentEgg.getZ()+.5)));
+            }else panel.row("Plan",event.toLowerCase(java.util.Locale.ROOT).contains("rage")?"Free combat / no forced mid return":"Fight event targets");
+            addHudEventFields(panel,lines);
+            d.sections.add(panel);
+        }
+        if(nightQuestSupport.isEnabled()&&nightQuestActive){
+            com.nezurstandalone.gui.GrinderDashboard.Section q=new com.nezurstandalone.gui.GrinderDashboard.Section("Night Quest","ACTIVE",PURPLE);
+            String live=hudField(lines,"Quest kills","Night Quest","Quest");
+            if(!live.isEmpty())q.row("Server progress",live);
+            if(hudStats.questGoal>0)q.progress("Kills observed",Math.min(hudStats.questKills,hudStats.questGoal)+" / "+hudStats.questGoal,hudStats.questKills/(float)hudStats.questGoal);
+            q.row("Elapsed",GrinderHudStats.time(now-nightQuestStartTime));
+            q.row("Session rewards",sessionNightQuests+" done / "+hudStats.questVile+" Vile");
+            if(hudStats.questXP>0)q.row("Quest XP","+"+GrinderHudStats.number(hudStats.questXP));
+            d.sections.add(q);
+        }else if(nextNightQuestTime>now&&nightQuestSupport.isEnabled()){
+            d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Night Quest",GrinderHudStats.time(nextNightQuestTime-now)+" estimated",PURPLE));
+        }
+        if(isHudShopState()){
+            com.nezurstandalone.gui.GrinderDashboard.Section shop=new com.nezurstandalone.gui.GrinderDashboard.Section("Loadout",prettyState(currentState),PURPLE);
+            LoadoutPlanner.Slot pending=loadout.pending();
+            shop.row("Action",pending==null?"Verify server equipment":pending.desired);
+            if(pending!=null)shop.row("Stage",pending.state.name().toLowerCase(java.util.Locale.ROOT).replace('_',' '));
+            if(npcRetryAfterNanos>System.nanoTime())shop.row("Retry",GrinderHudStats.time((npcRetryAfterNanos-System.nanoTime())/1000000));
+            d.sections.add(shop);
+        }else if(autoPerk.isEnabled()||autoKillstreak.isEnabled()){
+            for(LoadoutPlanner.Slot slot:loadout.slots())if(slot.enabled&&slot.state!=LoadoutPlanner.State.SATISFIED&&slot.state!=LoadoutPlanner.State.DISABLED
+                    &&!(slot.state==LoadoutPlanner.State.LEVEL_LOCKED&&LoadoutPlanner.NONE.equals(slot.desired))){
+                String action=slot.desired+" / "+slot.reason;
+                if(slot.state==LoadoutPlanner.State.LEVEL_LOCKED)action=slot.desired+" / "+slot.reason.replace("requires slot level ","Lv ").replace("requires level ","Lv ");
+                else if(slot.state==LoadoutPlanner.State.WAITING_FOR_GOLD){
+                    LoadoutPlanner.Entry entry=loadout.entry(slot.kind,slot.desired);
+                    double missing=entry==null?Double.NaN:entry.price()-wallet;
+                    action=slot.desired+" / "+(Double.isFinite(missing)&&missing>0?"+"+GrinderHudStats.number(missing)+"g needed":"waiting for gold");
                 }
-            } else {
-                float vw = GuiDraw.textWidthScaled(row[1], 0.8f);
-                float vx = HUD_W - pad - vw;
-                if (isMidRow) {
-                    // Small fill bar showing mid population against the swap threshold.
-                    float frac = GuiAnim.clamp01(midSpring.value / (float) Math.max(1, minMidPlayers.value * 2));
-                    float mbW = 26f, mbX = vx - mbW - 5f, mbY = ry + 2.5f;
-                    GuiDraw.roundedRect(mbX, mbY, mbX + mbW, mbY + 2.4f, 1.2f, GuiDraw.withAlpha(0x33FFFFFF, rowA));
-                    int mc2 = mid < minMidPlayers.value ? AMBER : GREEN;
-                    if (frac > 0f) GuiDraw.roundedRect(mbX, mbY, mbX + mbW * frac, mbY + 2.4f, 1.2f, GuiDraw.withAlpha(mc2, rowA));
-                    valColor = mc2;
-                }
-                GuiDraw.textFitScaled(row[1], vx, ry, 0.8f, HUD_W - pad - vx, GuiDraw.withAlpha(valColor, rowA), false);
+                else if(slot.state==LoadoutPlanner.State.NEEDS_PURCHASE||slot.state==LoadoutPlanner.State.NEEDS_REVALIDATION||slot.state==LoadoutPlanner.State.NEEDS_EQUIP)action=slot.desired+" / next spawn";
+                d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Upgrade",action,slot.state==LoadoutPlanner.State.LEVEL_LOCKED?GuiTheme.TEXT_MUTED:AMBER));break;
             }
-            ry += rowH;
         }
-
-        // Break shift meter.
-        if (breakBar) {
-            long now = com.nezurstandalone.control.Clock.millis();
-            long total = isOnBreak ? (long) (breakDurationLimit.value * 60000L)
-                    : (long) (workDurationLimit.value * 3600000L);
-            float frac = total <= 0 ? 0f : GuiAnim.clamp01(1f - (now - lastBreakEndTime) / (float) total);
-            int col = isOnBreak ? AMBER : GREEN;
-            GuiDraw.textScaled(isOnBreak ? "BREAK" : "SHIFT", pad, ry, 0.72f, GuiDraw.withAlpha(GuiTheme.TEXT_MUTED, ease), false);
-            float bX1 = pad, bX2 = HUD_W - pad, bY = ry + 8.5f;
-            GuiDraw.roundedRect(bX1, bY, bX2, bY + 2.4f, 1.2f, GuiDraw.withAlpha(0x33FFFFFF, ease));
-            if (frac > 0f) GuiDraw.roundedRect(bX1, bY, bX1 + (bX2 - bX1) * frac, bY + 2.4f, 1.2f, GuiDraw.withAlpha(col, ease));
+        if(autoPrestige.isEnabled()&&prestigeGold.known()){
+            com.nezurstandalone.gui.GrinderDashboard.Section p=new com.nezurstandalone.gui.GrinderDashboard.Section("Prestige",prestigeGold.ready()?"READY":"EARNING GOLD",AMBER);
+            p.progress("Earned gold",GrinderHudStats.number(prestigeGold.earned())+" / "+GrinderHudStats.number(prestigeGold.required()),(float)(prestigeGold.earned()/Math.max(1,prestigeGold.required())));
+            p.row("Remaining",GrinderHudStats.number(prestigeGold.remaining())+"g");d.sections.add(p);
         }
+        if(isOnBreak||breakTimeEnable.isEnabled()){
+            long total=isOnBreak?(long)(breakDurationLimit.value*60000):(long)(workDurationLimit.value*3600000);
+            long remaining=Math.max(0,total-(now-lastBreakEndTime));
+            d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row(isOnBreak?"Break":"Next break",GrinderHudStats.time(remaining),isOnBreak?AMBER:GREEN));
+        }
+        if(throttleCooldownEnd>now)d.status.add(new com.nezurstandalone.gui.GrinderDashboard.Row("Command delay",GrinderHudStats.time(throttleCooldownEnd-now),AMBER));
+        hudSnapshot=d;return d;
+    }
 
-        GuiDraw.resetState();
-        GlStateManager.popMatrix();
+    private boolean isHudShopState(){
+        return currentState==State.PERK_NAVIGATING||currentState==State.PERK_INTERACTING||currentState==State.PERK_CLICKING_GUI
+            ||currentState==State.PRESTIGE_NAVIGATING||currentState==State.PRESTIGE_INTERACTING||currentState==State.PRESTIGE_CLICKING_GUI;
+    }
+    private String hudRate(double amount,double hours,long elapsed){return elapsed<30000?"warming up":GrinderHudStats.number(amount/hours)+" /h";}
+    private String hudMovement(){
+        if(!PathfinderManager.available(this))return "Another module owns movement";
+        if(PathfinderManager.hasDestination())return PathfinderManager.getState().name().toLowerCase(java.util.Locale.ROOT);
+        return currentState==State.FIGHTING||currentState==State.SPIRE_FIGHTING?"Direct combat":"No route needed";
+    }
+    private String hudActivity(long now){
+        if(isAutoHealBusy())return "Healing / combat paused";
+        if(correctionTick>=0)return "Waiting for position to settle";
+        if(isOnBreak)return "On break / waiting in spawn";
+        if(currentState==State.IDLE)return "Waiting for the next action";
+        if(currentState==State.FIGHTING)return "Scanning for an eligible opponent";
+        if(currentState==State.RETURNING_TO_MID)return "Returning to mid / nearby combat interrupts";
+        return prettyState(currentState);
+    }
+    private static String hudField(java.util.List<String> lines,String... names){
+        for(String line:lines){String text=LoadoutPlanner.clean(line).trim();int colon=text.indexOf(':');
+            if(colon<0)continue;String key=text.substring(0,colon).trim();
+            for(String name:names)if(key.equalsIgnoreCase(name))return text.substring(colon+1).trim();
+        }return "";
+    }
+    private void addHudEventFields(com.nezurstandalone.gui.GrinderDashboard.Section panel,java.util.List<String> lines){
+        for(String line:lines){
+            if(panel.rows.size()>=7)break;
+            String text=LoadoutPlanner.clean(line).trim();int colon=text.indexOf(':');if(colon<0)continue;
+            String key=text.substring(0,colon).trim(),value=text.substring(colon+1).trim();
+            if(value.isEmpty()||!key.toLowerCase(java.util.Locale.ROOT).matches("(?:time(?: left)?|remaining|ends? in|score|points|rank|position|kills|team|team score|tickets|deposited|pool|winnings|carried gold|event gold|souls|lives|powerup|power-up)"))continue;
+            boolean duplicate=false;for(com.nezurstandalone.gui.GrinderDashboard.Row row:panel.rows)if(row.label.equalsIgnoreCase(key)||row.value.equalsIgnoreCase(value))duplicate=true;
+            if(!duplicate)panel.row(key,value,GuiTheme.TEXT);
+        }
+    }
+
+    @SubscribeEvent public void onRenderHud(RenderGameOverlayEvent.Post event) {
+        if(event.type!=RenderGameOverlayEvent.ElementType.ALL||!isHudVisible()||mc.thePlayer==null||mc.theWorld==null||mc.currentScreen!=null)return;
+        com.nezurstandalone.gui.GrinderDashboard.Snapshot snapshot=dashboard();
+        if(hudFadeStart==0)hudFadeStart=com.nezurstandalone.control.Clock.millis();
+        float alpha=hudAnimations.isEnabled()?Math.min(1,(com.nezurstandalone.control.Clock.millis()-hudFadeStart)/200f):1;
+        drawDashboard(snapshot,getRenderX(),getRenderY(),alpha);
+    }
+
+    /** The editor uses the same snapshot and bounds as the live HUD. */
+    public void editorPreview(int x,int y,float alpha){drawDashboard(dashboard(),x,y,alpha);}
+
+    private void drawDashboard(com.nezurstandalone.gui.GrinderDashboard.Snapshot snapshot,int x,int y,float alpha){
+        GlStateManager.pushMatrix();
+        try{
+            GlStateManager.translate(x,y,0);float scale=dashboardScale();GlStateManager.scale(scale,scale,1);
+            GuiDraw.resetState();com.nezurstandalone.gui.GrinderDashboard.render(snapshot,alpha);
+        }finally{GuiDraw.resetState();GlStateManager.popMatrix();}
     }
 
     private int stateColor(State s) {
         switch (s) {
             case DRAGON_EGG: return PURPLE;
             case FIGHTING: case SPIRE_FIGHTING: return GREEN;
+            case RETURNING_TO_MID: return CYAN;
             case BLOCKHEAD_FIGHTING: return GREEN;
             case BLOCKHEAD_AVOIDING: return AMBER;
             case ROBBERY_FIGHTING: return GREEN;
@@ -3803,6 +4062,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             case LEAVING_SPAWN: return "Leaving Spawn";
             case DRAGON_EGG: return "Dragon Egg";
             case FIGHTING: return "Fighting";
+            case RETURNING_TO_MID: return "Returning to Mid";
             case LOBBY_SWAP: return "Swapping";
             case LIMBO: return "Limbo";
             case LOBBY_RECONNECT: return "Reconnecting";
@@ -3903,5 +4163,170 @@ public class GrinderEngine extends Module implements DraggableHud {
                 +" expectedY="+(packet.getMotionY()/8000.0)+" expectedZ="+(packet.getMotionZ()/8000.0)
                 +" actualX="+instance.mc.thePlayer.motionX+" actualY="+instance.mc.thePlayer.motionY+" actualZ="+instance.mc.thePlayer.motionZ);
         }catch(RuntimeException failure){com.nezurstandalone.control.GrinderDiagnostics.record("VELOCITY_LOG_ERROR",failure.getClass().getSimpleName());}
+    }
+
+    private void diagnosticGameDump() {
+        if(!classicRuntime()||!com.nezurstandalone.control.GrinderDiagnostics.isActive()||mc.thePlayer==null||mc.theWorld==null)return;
+        long now=com.nezurstandalone.control.Clock.millis();
+        if(gameDumpWorld==mc.theWorld&&gameDumpScreen==mc.currentScreen&&now-gameDumpAt<30000)return;
+        if(gameDumpWorld==mc.theWorld&&now-gameDumpAt<1000)return;
+        gameDumpAt=now;gameDumpWorld=mc.theWorld;gameDumpScreen=mc.currentScreen;
+        java.util.Map<String,Object> data=new java.util.LinkedHashMap<>();
+        data.put("capturedAt",now);data.put("state",String.valueOf(currentState));
+        data.put("sidebarTitle",Utils.getScoreboardTitle());data.put("sidebarLines",Utils.getScoreboardLines());
+        data.put("level",Utils.getLevel());double dumpGold=scoreboardGold();data.put("gold",Double.isFinite(dumpGold)?dumpGold:null);
+        data.put("map",String.valueOf(PitMapManager.getCurrentMap()));
+        data.put("zone",PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ));
+        data.put("position",java.util.Arrays.asList(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ));
+        data.put("guiOwner",com.nezurstandalone.control.GuiLease.ownerName());data.put("inventoryOwner",com.nezurstandalone.control.InventoryOwner.ownerName());
+        data.put("movementOwner",PathfinderManager.ownerName());
+        data.put("xp",sessionXP);data.put("goldEarned",sessionGold);data.put("freshDrops",sessionMystics);
+        data.put("kills",hudStats.kills);data.put("assists",hudStats.assists);data.put("deaths",hudStats.deaths);
+        data.put("quests",sessionNightQuests);data.put("questActive",nightQuestActive);data.put("questKills",hudStats.questKills);
+        data.put("mysticPending",mysticPickupPending);data.put("mysticTarget",mysticTargetId);
+        java.util.List<Object> inventory=new java.util.ArrayList<>(),drops=new java.util.ArrayList<>(),menu=new java.util.ArrayList<>();
+        for(int i=0;i<mc.thePlayer.inventory.mainInventory.length;i++) {
+            ItemStack stack=mc.thePlayer.inventory.mainInventory[i];if(stack!=null)inventory.add(dumpStack(i,stack));
+        }
+        for(Entity entity:mc.theWorld.loadedEntityList)if(entity instanceof EntityItem&&mc.thePlayer.getDistanceSqToEntity(entity)<=4096&&drops.size()<64) {
+            EntityItem item=(EntityItem)entity;java.util.Map<String,Object> row=dumpStack(item.getEntityId(),item.getEntityItem());
+            row.put("ageTicks",item.ticksExisted);row.put("position",java.util.Arrays.asList(item.posX,item.posY,item.posZ));
+            row.put("distance",mc.thePlayer.getDistanceToEntity(item));row.put("recognizedMystic",isMysticItem(item));drops.add(row);
+        }
+        if(mc.currentScreen instanceof GuiChest){IInventory inv=((ContainerChest)((GuiChest)mc.currentScreen).inventorySlots).getLowerChestInventory();
+            data.put("menuTitle",inv.getDisplayName().getUnformattedText());
+            for(int i=0;i<inv.getSizeInventory();i++)if(inv.getStackInSlot(i)!=null)menu.add(dumpStack(i,inv.getStackInSlot(i)));
+        }
+        data.put("inventory",inventory);data.put("nearbyDrops",drops);data.put("menu",menu);
+        com.nezurstandalone.control.GrinderDiagnostics.gameDump(new com.google.gson.Gson().toJson(data));
+    }
+
+    private boolean classicRuntime(){
+        net.minecraft.client.multiplayer.ServerData server=mc.getCurrentServerData();
+        return server!=null&&com.nezurstandalone.control.LowestClassicPit.classicHost(server.serverIP);
+    }
+
+    private boolean completeMysticPickupOnInventory(){
+        if(!classicRuntime()||!isToggled()||mc.thePlayer==null||mc.theWorld==null
+                ||engineWorld!=mc.theWorld||enginePlayer!=mc.thePlayer
+                ||currentState!=State.PICKING_UP_MYSTIC||mysticPickupStack==null)return false;
+        if(countMatchingMystics(mysticPickupStack)<=mysticInventoryBefore)return false;
+        com.nezurstandalone.control.GrinderDiagnostics.record("MYSTIC_COLLECTED","source=server_inventory cancelling_pickup_path=true");
+        finishMysticPickup();return true;
+    }
+
+    private boolean reserveNpcAccess() {
+        if(PathfinderManager.available(this) && com.nezurstandalone.control.GuiLease.acquire(this)) {
+            npcAccessMessageAt=0L;return true;
+        }
+        pauseGameplay();
+        PathfinderManager.clear(this,true);
+        long now=com.nezurstandalone.control.Clock.millis();
+        npcSpotStartedAt=navRepathAt=0L;interactStamp=now;
+        if(npcAccessMessageAt==0L || now-npcAccessMessageAt>=10000L) {
+            npcAccessMessageAt=now;
+            log("Waiting for NPC access (GUI: "+com.nezurstandalone.control.GuiLease.ownerName()
+                    +", inventory: "+com.nezurstandalone.control.InventoryOwner.ownerName()
+                    +", movement: "+PathfinderManager.ownerName()+").");
+        }
+        return false;
+    }
+
+    private int findHypixelPrestigeConfirmation(IInventory inv) {
+        String title=inv.getDisplayName().getUnformattedText();
+        for(int slot=0;slot<inv.getSizeInventory();slot++) {
+            ItemStack stack=inv.getStackInSlot(slot);
+            if(stack!=null && PrestigeConfirmation.hypixelButton(title,stack.getDisplayName(),
+                    net.minecraft.item.Item.getIdFromItem(stack.getItem()),stack.getMetadata(),loreOf(stack)))return slot;
+        }
+        return findAction(inv,"Confirm","Confirm!","Prestige","Prestige!");
+    }
+
+    private void recordMysticDrop(String msg,boolean classic,int channel){
+            long now=com.nezurstandalone.control.Clock.millis();
+            if(now-lastMysticCountMs>400L){
+                lastMysticCountMs=now;sessionMystics++;
+                if(classic){
+                    lastMysticChatTime=now;mysticPickupPending=true;mysticPendingWorld=mc.theWorld;
+                    mysticDropX=mc.thePlayer.posX;mysticDropY=mc.thePlayer.posY;mysticDropZ=mc.thePlayer.posZ;
+                }else if(mysticPickup.isEnabled() && !isBusyFlow()){
+                    lastMysticChatTime=now;
+                    mysticDropX=mc.thePlayer.posX;mysticDropY=mc.thePlayer.posY;mysticDropZ=mc.thePlayer.posZ;
+                    mysticRepathAt=lastMysticTraceTime=0L;sawMysticItem=false;mysticTargetId=-1;
+                    mysticPickupStack=null;mysticMissingSince=0L;currentState=State.PICKING_UP_MYSTIC;
+                    log("Mystic dropped — picking it up at all costs!");
+                }
+                com.nezurstandalone.control.GrinderDiagnostics.record("MYSTIC_CHAT","channel="+channel+" state="+currentState+" busy="+isBusyFlow()+" enabled="+mysticPickup.isEnabled()+" message="+msg);
+            }
+    }
+
+    private boolean refreshTdmContext(){
+        long token=com.nezurstandalone.control.ClientSession.current();
+        boolean active=isToggled()&&mc.theWorld!=null&&mc.thePlayer!=null&&CombatAura.isTdmEventActive();
+        if(tdmWorld!=mc.theWorld||active!=tdmWasActive){
+            tdmAssists.reset();tdmAssistBaseline=hudStats.assists;
+        }else if(tdmPlayer!=mc.thePlayer||tdmSession!=token)tdmAssists.invalidatePending();
+        tdmWorld=mc.theWorld;tdmPlayer=mc.thePlayer;tdmSession=token;tdmWasActive=active;
+        return active;
+    }
+
+    private boolean tdmAllows(EntityPlayer player){
+        if(!refreshTdmContext())return true;
+        observeTdmLife(player);
+        if(!tdmAssists.allows(player.getUniqueID()))return false;
+        com.nezurstandalone.combat.TargetEvaluation estimate=new com.nezurstandalone.combat.TargetEvaluation(mc.thePlayer,player,activeCombatOptions().range(),5.6,.5,6);
+        return TdmAssistTracker.survivesTag(player.getHealth()+player.getAbsorptionAmount(),estimate.damage,estimate.multiplier);
+    }
+
+    private void observeTdmLife(EntityPlayer player){
+        if(player==null||player==mc.thePlayer)return;
+        // Removal from view is not death. A real death or a return to spawn ends that life.
+        String zone=PitMapManager.getZone(player.posX,player.posY,player.posZ);
+        if(player.getHealth()<=0||player.deathTime>0)tdmAssists.death(player.getUniqueID(),player);
+        else if("Spawn".equals(zone)||"Overspawn".equals(zone))tdmAssists.death(player.getUniqueID());
+        else tdmAssists.seen(player.getUniqueID(),player);
+    }
+
+    private void tdmAttackSent(EntityPlayer player){
+        if(refreshTdmContext()&&player.worldObj==mc.theWorld)tdmAssists.sent(player.getUniqueID(),player,com.nezurstandalone.control.Clock.SYSTEM.nanos());
+    }
+
+    private void tdmHurtObserved(EntityPlayer player){
+        if(refreshTdmContext()&&player.worldObj==mc.theWorld&&tdmAssists.hurt(player.getUniqueID(),player,com.nezurstandalone.control.Clock.SYSTEM.nanos()))
+            com.nezurstandalone.control.GrinderDiagnostics.record("TDM_TAG","player="+player.getName()+" switching to an untagged opponent");
+    }
+
+    public static void serverHurtObserved(Entity entity){
+        GrinderEngine g=instance;
+        if(g!=null&&g.isToggled()&&entity instanceof EntityPlayer&&entity!=g.mc.thePlayer&&entity.worldObj==g.mc.theWorld)
+            g.tdmHurtObserved((EntityPlayer)entity);
+    }
+
+    public static void serverDeathObserved(Entity entity){
+        GrinderEngine g=instance;if(g==null||!g.isToggled()||entity==null||entity.worldObj!=g.mc.theWorld)return;
+        if(entity==g.mc.thePlayer)g.hudStats.serverDeath(com.nezurstandalone.control.Clock.millis());
+        else if(entity instanceof EntityPlayer&&g.refreshTdmContext())g.tdmAssists.death(((EntityPlayer)entity).getUniqueID(),entity);
+    }
+
+    public static void serverAttackSent(Entity entity){
+        GrinderEngine g=instance;
+        if(g!=null&&g.isToggled()&&entity instanceof EntityPlayer&&entity.worldObj==g.mc.theWorld)
+            g.tdmAttackSent((EntityPlayer)entity);
+    }
+    private long npcAccessMessageAt,gameDumpAt,mysticPickupStarted;
+    private boolean mysticPickupPending;
+    private Object mysticPendingWorld,gameDumpWorld,gameDumpScreen;
+    private final TdmAssistTracker tdmAssists=new TdmAssistTracker();
+    private Object tdmWorld,tdmPlayer;
+    private long tdmSession=-1;
+    private boolean tdmWasActive;
+    private int tdmAssistBaseline;
+
+
+    private java.util.Map<String,Object> dumpStack(int slot,ItemStack stack){
+        java.util.Map<String,Object> row=new java.util.LinkedHashMap<>();row.put("slotOrEntityId",slot);
+        if(stack!=null){row.put("name",stack.getDisplayName());row.put("itemId",net.minecraft.item.Item.getIdFromItem(stack.getItem()));
+            row.put("damage",stack.getItemDamage());row.put("count",stack.stackSize);row.put("lore",loreOf(stack));}
+        return row;
     }
 }

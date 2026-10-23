@@ -3,10 +3,14 @@ import net.minecraft.client.settings.KeyBinding;
 import java.util.*;
 /** Automated key ownership never clears another owner's or the user's held key. */
 public final class MovementKeys {
+    public static java.util.function.BooleanSupplier movementAllowed = () -> true;
+    public static String owners(){StringBuilder out=new StringBuilder();for(Map.Entry<Integer,Press> e:presses.entrySet())out.append(e.getKey()).append(':').append(e.getValue().owner).append(',');return out.toString();}
     private static final class Press {String owner; long session, expires;}
     private static final Map<Integer,Press> presses=new HashMap<>();
     public static String walkerOwner(){return "walker";}
     public static void set(String owner,int key,boolean down){
+        if(down&&!movementAllowed.getAsBoolean()){release(owner);return;}
+
         if(key==net.minecraft.client.Minecraft.getMinecraft().gameSettings.keyBindJump.getKeyCode()){JumpController.request(owner,down);return;}
         net.minecraft.client.Minecraft mc=net.minecraft.client.Minecraft.getMinecraft();
         if(down&&(key==mc.gameSettings.keyBindAttack.getKeyCode()||key==mc.gameSettings.keyBindUseItem.getKeyCode()))throw new IllegalArgumentException("Native actions require GuardedInput, not movement keys");
@@ -23,6 +27,11 @@ public final class MovementKeys {
     public static void release(String owner){
         JumpController.request(owner,false);
         for(Integer key:new ArrayList<>(presses.keySet())){Press p=presses.get(key);if(p.owner.equals(owner))set(owner,key,false);}
+    }
+    public static void authorizationLost(){
+        List<Integer> keys=new ArrayList<>(presses.keySet());presses.clear();List<Runnable> release=new ArrayList<>();
+        for(int key:keys)release.add(()->KeyBinding.setKeyBindState(key,com.nezurstandalone.input.NativeActionGate.physical(key)));
+        Cleanup.run(release.toArray(new Runnable[0]));
     }
     public static void refresh(){
         long session=ClientSession.current(),now=Clock.SYSTEM.nanos();

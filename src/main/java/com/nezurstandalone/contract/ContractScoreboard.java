@@ -20,8 +20,9 @@ public final class ContractScoreboard {
             this.current=current;this.target=target;this.remainingSeconds=remainingSeconds;this.objective=objective;
         }
     }
-    public static Snapshot parse(String title,List<String> lines) {
-        boolean valid=isPitTitle(title);
+    public static Snapshot parse(String title,List<String> lines){return parse(title,lines,false);}
+    public static Snapshot parse(String title,List<String> lines,boolean classic) {
+        boolean valid=isPitTitle(title)||(classic&&"THE PIT CLASSIC".equalsIgnoreCase(clean(title)));
         if(!valid || lines==null || lines.isEmpty()) return new Snapshot(valid,false,false,ContractOffer.Type.UNKNOWN,0,0,-1,"");
         int seconds=-1, current=0, target=0;
         String objective="";

@@ -1,0 +1,1 @@
+package org.lwjgl.input;public class Keyboard{public static boolean isCreated(){return true;}public static boolean isKeyDown(int key){return false;}}

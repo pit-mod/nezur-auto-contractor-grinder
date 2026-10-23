@@ -5,6 +5,13 @@ public final class MenuTransition {
     public enum Result { IDLE, WAITING, CHANGED, TIMED_OUT, UNKNOWN }
     private boolean tracked, acknowledged, rejected, responseOnly,strict;
     private Object authoritativeContainer;
+    private boolean serverContentsRequired;
+    private Object serverContainer;
+    /** Active, guarded server inventory evidence; permits an in-place chooser refresh. */
+    public void serverContents(Object container){if(serverContentsRequired&&isPending())serverContainer=container;}
+    public void beginServerContents(Object source,String kind,String contents,long now,String... expected){
+        begin(source,kind,contents,now,expected);serverContentsRequired=true;serverContainer=null;
+    }
     private int sourceSlot;
     public void beginAuthoritative(Object source,String kind,String contents,long now,int window,short action,int slot,String... expected){
         beginTracked(source,kind,contents,now,window,action,expected);strict=true;sourceSlot=slot;
@@ -53,7 +60,9 @@ public final class MenuTransition {
         if (rejected || now - started >= TIMEOUT_NANOS) return strict?Result.UNKNOWN:Result.TIMED_OUT;
         boolean changed = container != source || !sourceKind.equals(kind)
                 || !sourceContents.equals(contents);
-        if (!responseOnly && container != null && changed && (!tracked || acknowledged) && (!strict || container!=source&&container==authoritativeContainer)) {
+        if (!responseOnly && container != null && (changed||serverContentsRequired&&container==serverContainer)
+                && (!serverContentsRequired||container==serverContainer)
+                && (!tracked || acknowledged) && (!strict || container!=source&&container==authoritativeContainer)) {
             for (String next : expected) {
                 if (next.equals(kind)) {
                     clear();
@@ -66,6 +75,7 @@ public final class MenuTransition {
 
     public void clear() {
         tracked = acknowledged = rejected = responseOnly = strict = false;authoritativeContainer=null;sourceSlot=-1;
+        serverContentsRequired=false;serverContainer=null;
         source = null;
         sourceKind = null;
         sourceContents = null;

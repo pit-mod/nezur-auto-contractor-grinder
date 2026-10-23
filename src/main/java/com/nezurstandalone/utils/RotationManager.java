@@ -14,11 +14,9 @@ import java.util.Random;
 /**
  * The single writer of player rotation.
  *
- * <p>Every angle this class produces leaves through {@code EntityPlayerSP.setAngles} as an
- * <em>integer</em> mouse delta scaled by vanilla's sensitivity curve, so the emitted rotation
- * is always a whole multiple of the client's mouselook GCD. Nothing else in the mod may
- * assign {@code rotationYaw} / {@code rotationPitch} directly; doing so produces deltas that
- * no physical mouse could have generated.
+ * <p>The default output applies integer mouse deltas through {@code EntityPlayerSP.setAngles}.
+ * A detached output receives the same sensitivity-scaled angular deltas in its own buffer;
+ * it never writes player/camera fields. Both outputs share the timing and movement solver.
  *
  * <h2>Motion model</h2>
  * Aim is <em>ballistic</em>, not exponential. Each re-aim plans one minimum-jerk submovement
@@ -50,6 +48,18 @@ import java.util.Random;
  * toward a dead target indefinitely, drifting and jittering while the player stood still.
  */
 public class RotationManager {
+    /** A leased real combo temporarily owns rotation; detached output remains available. */
+    public static java.util.function.BooleanSupplier cameraAutomationAllowed = () -> true;
+
+    /** Detached consumers share this solver without writing player/camera fields. */
+    public interface Output {
+        float yaw();
+        float pitch();
+        void apply(float yawDelta, float pitchDelta);
+    }
+    private final Output output;
+    private float currentYaw() { return output == null ? mc.thePlayer.rotationYaw : output.yaw(); }
+    private float currentPitch() { return output == null ? mc.thePlayer.rotationPitch : output.pitch(); }
 
     // ------------------------------------------------------------------ owners
 
@@ -175,7 +185,10 @@ public class RotationManager {
     }
 
     public RotationManager() {
+        this(null);
     }
+
+    public RotationManager(Output output) { this.output = output; }
 
     public static RotationManager getInstance() {
         return INSTANCE;
@@ -211,7 +224,17 @@ public class RotationManager {
      */
     public void setTargetRotation(String owner, int priority, float yaw, float pitch,
                                   float speedMultiplier, boolean responsive) {
-        if(mc.currentScreen!=null || manualCamera.blocked(com.nezurstandalone.control.Clock.millis())) {
+        publishTargetRotation(owner,priority,yaw,pitch,speedMultiplier,responsive,4.0f);
+    }
+
+    /** Macro camera scale: 8 equals the former 4; lower values remain available. */
+    public void setMacroTargetRotation(String owner,int priority,float yaw,float pitch,float speed) {
+        publishTargetRotation(owner,priority,yaw,pitch,speed*0.5f,true,0.5f);
+    }
+
+    private void publishTargetRotation(String owner,int priority,float yaw,float pitch,
+                                       float speedMultiplier,boolean responsive,float minimumSpeed) {
+        if(mc.currentScreen!=null || output == null && manualCamera.blocked(com.nezurstandalone.control.Clock.millis())) {
             if(owner!=null)clearTarget(owner);
             return;
         }
@@ -231,7 +254,7 @@ public class RotationManager {
         request.priority = priority;
         request.yaw = yaw;
         request.pitch = MathHelper.clamp_float(pitch, -89.9f, 89.9f);
-        request.speed = MathHelper.clamp_float(speedMultiplier, 4.0f, 25.0f);
+        request.speed = MathHelper.clamp_float(speedMultiplier, minimumSpeed, 25.0f);
         request.expiresAt = com.nezurstandalone.control.Clock.millis() + REQUEST_TTL_MS;
         request.responsive = responsive;
     }
@@ -277,6 +300,26 @@ public class RotationManager {
     public void beginCameraFrame() { physicalLookProcessed=false; }
     public void finishCameraFrame() { if(!physicalLookProcessed)afterMouseInput(0,0); }
 
+    /** Follow an already planned gesture through the detached native sensitivity output.
+     * Unlike tracking, this does not exponentially chase and shrink each angular excursion.
+     * Yaw stays unwrapped so a planned 360 cannot reverse halfway through the turn. */
+    public void followGesture(float yaw,float pitch,long nowNanos) {
+        if(output==null || !Float.isFinite(yaw) || !Float.isFinite(pitch)
+                || mc.thePlayer==null || mc.theWorld==null || mc.thePlayer.isDead || mc.currentScreen!=null)return;
+        long now=nowNanos/1_000_000L;
+        if(rotationWorld!=mc.theWorld || rotationPlayer!=mc.thePlayer){
+            clearAll();lastRenderTime=0;rotationWorld=mc.theWorld;rotationPlayer=mc.thePlayer;
+        }
+        if(lastRenderTime==0){lastRenderTime=now;return;}
+        double dt=Math.min(.1,(now-lastRenderTime)/1000.0);lastRenderTime=now;
+        if(dt<=0)return;
+        planActive=false;
+        double dy=yaw-currentYaw(),dp=MathHelper.clamp_float(pitch,-89.9F,89.9F)-currentPitch();
+        double length=Math.sqrt(dy*dy+dp*dp),limit=MAX_ANGULAR_VELOCITY*dt;
+        if(length>limit&&length>0){double scale=limit/length;dy*=scale;dp*=scale;}
+        emit(dy,dp);
+    }
+
     /** Invoked after physical look, or once at frame end if vanilla skipped physical look. */
     public void afterMouseInput(int physicalX,int physicalY) {
         physicalLookProcessed=true;
@@ -302,7 +345,11 @@ public class RotationManager {
         }
 
         long currentTime = com.nezurstandalone.control.Clock.millis();
-        if(manualCamera.sample(currentTime,physicalX,physicalY)) {
+        if(output==null && !cameraAutomationAllowed.getAsBoolean()) {
+            clearAll();lastRenderTime=currentTime;manualCamera.reset();
+            return;
+        }
+        if(output == null && manualCamera.sample(currentTime,physicalX,physicalY)) {
             clearAll();lastRenderTime=currentTime;
             return;
         }
@@ -328,8 +375,8 @@ public class RotationManager {
         double deltaYaw = 0;
         double deltaPitch = 0;
 
-        float errorYaw = MathHelper.wrapAngleTo180_float(active.yaw - mc.thePlayer.rotationYaw);
-        float errorPitch = active.pitch - mc.thePlayer.rotationPitch;
+        float errorYaw = MathHelper.wrapAngleTo180_float(active.yaw - currentYaw());
+        float errorPitch = active.pitch - currentPitch();
 
         if (active.responsive) {
             // Sustained proportional (exponential) follow, used for combat tracking. The min-jerk
@@ -503,8 +550,8 @@ public class RotationManager {
      * submovement; anything still outstanding after that is treated as a fresh re-aim.
      */
     private void finishPlan(Request request) {
-        float residualYaw = MathHelper.wrapAngleTo180_float(request.yaw - mc.thePlayer.rotationYaw);
-        float residualPitch = request.pitch - mc.thePlayer.rotationPitch;
+        float residualYaw = MathHelper.wrapAngleTo180_float(request.yaw - currentYaw());
+        float residualPitch = request.pitch - currentPitch();
         boolean offTarget = Math.abs(residualYaw) >= DEAD_ZONE_DEG
                 || Math.abs(residualPitch) >= DEAD_ZONE_DEG;
 
@@ -606,7 +653,8 @@ public class RotationManager {
         pitchAccumulator -= deltaY;
 
         if (deltaX != 0 || deltaY != 0) {
-            mc.thePlayer.setAngles((float) deltaX * f1, (float) deltaY * f1);
+            if (output == null) mc.thePlayer.setAngles((float) deltaX * f1, (float) deltaY * f1);
+            else output.apply((float) deltaX * f1 * 0.15F, -(float) deltaY * f1 * 0.15F);
         }
     }
 }

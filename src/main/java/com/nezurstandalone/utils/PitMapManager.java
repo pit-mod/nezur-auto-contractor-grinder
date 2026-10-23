@@ -13,25 +13,36 @@ public class PitMapManager {
     private static PitMap cachedMap = PitMap.UNKNOWN;
     private static boolean hasChecked = false;
     private static Object cachedWorld;
-    private static long checkedAt;
+    private static long startedAt=Long.MIN_VALUE;
+    private static int checkedTick=Integer.MIN_VALUE;
+    private static final BlockPos GENESIS_MARKER=new BlockPos(14,85,-13),CASTLE_MARKER=new BlockPos(18,95,-9),
+            ELEMENTS_MARKER=new BlockPos(-7,113,-10),SEASONS_MARKER=new BlockPos(-87,85,-51),CORALS_MARKER=new BlockPos(-2,113,11);
 
     public static void detectMap() {
         Minecraft mc = Minecraft.getMinecraft();
+        if(cachedWorld!=mc.theWorld){reset();cachedWorld=mc.theWorld;}
+        if(hasChecked)return;
         if (mc.theWorld == null) {
             cachedMap = PitMap.UNKNOWN;
             hasChecked = false;
             return;
         }
+        if(mc.thePlayer==null)return;
+        long now=com.nezurstandalone.control.Clock.millis();
+        if(startedAt==Long.MIN_VALUE)startedAt=now;
+        if(now-startedAt>=5000L){hasChecked=true;return;}
+        if(checkedTick==mc.thePlayer.ticksExisted)return;
+        checkedTick=mc.thePlayer.ticksExisted;
 
-        Block genesisCheck = mc.theWorld.getBlockState(new BlockPos(14, 85, -13)).getBlock();
+        Block genesisCheck = marker(mc,GENESIS_MARKER);
         if (genesisCheck == Blocks.nether_brick) {
             cachedMap = PitMap.GENESIS;
             hasChecked = true;
             return;
         }
 
-        BlockPos castlePos = new BlockPos(18, 95, -9);
-        Block castleCheck = mc.theWorld.getBlockState(castlePos).getBlock();
+        BlockPos castlePos = CASTLE_MARKER;
+        Block castleCheck = marker(mc,castlePos);
         if (castleCheck == Blocks.double_stone_slab) {
             int meta = castleCheck.getMetaFromState(mc.theWorld.getBlockState(castlePos));
             if (meta == 8) {
@@ -41,17 +52,16 @@ public class PitMapManager {
             }
         }
 
-        Block elementsCheck = mc.theWorld.getBlockState(new BlockPos(-7, 113, -10)).getBlock();
+        Block elementsCheck = marker(mc,ELEMENTS_MARKER);
         if (elementsCheck == Blocks.sandstone) {
             cachedMap = PitMap.ELEMENTS;
             hasChecked = true;
             return;
         }
 
-        Block seasonsCheck = mc.theWorld.getBlockState(new BlockPos(-87, 85, -51)).getBlock();
+        Block seasonsCheck = marker(mc,SEASONS_MARKER);
         if (seasonsCheck == Blocks.planks) {
-            int seasonsMeta = mc.theWorld.getBlockState(new BlockPos(-87, 85, -51)).getBlock()
-                    .getMetaFromState(mc.theWorld.getBlockState(new BlockPos(-87, 85, -51)));
+            int seasonsMeta = seasonsCheck.getMetaFromState(mc.theWorld.getBlockState(SEASONS_MARKER));
             if (seasonsMeta == 2) {
                 cachedMap = PitMap.FOUR_SEASONS;
                 hasChecked = true;
@@ -59,7 +69,7 @@ public class PitMapManager {
             }
         }
 
-        Block coralsCheck = mc.theWorld.getBlockState(new BlockPos(-2, 113, 11)).getBlock();
+        Block coralsCheck = marker(mc,CORALS_MARKER);
         if (coralsCheck == Blocks.sand) {
             cachedMap = PitMap.CORALS;
             hasChecked = true;
@@ -69,21 +79,20 @@ public class PitMapManager {
         cachedMap = PitMap.UNKNOWN;
     }
 
+    private static Block marker(Minecraft mc,BlockPos pos) {
+        return mc.theWorld.isBlockLoaded(pos)?mc.theWorld.getBlockState(pos).getBlock():null;
+    }
+
     public static PitMap getCurrentMap() {
-        Object world = Minecraft.getMinecraft().theWorld;
-        long now = com.nezurstandalone.control.Clock.millis();
-        if (world != cachedWorld || now - checkedAt > 5000L) {
-            reset(); cachedWorld = world; checkedAt = now;
-        }
-        if (!hasChecked) {
-            detectMap();
-        }
+        detectMap();
         return cachedMap;
     }
 
     public static void reset() {
         cachedMap = PitMap.UNKNOWN;
         hasChecked = false;
+        startedAt=Long.MIN_VALUE;
+        checkedTick=Integer.MIN_VALUE;
     }
 
     public static boolean isInSpawn(double x, double y, double z) {
@@ -305,6 +314,13 @@ public class PitMapManager {
         }
 
         return "???";
+    }
+
+    /** Combat roaming only: do not relabel spawn, sewer or server contract regions. */
+    public static boolean isInCombatArea(double x,double y,double z) {
+        String zone=getZone(x,y,z);
+        if(zone.equals("Spawn")||zone.equals("Overspawn")||zone.equals("Sewer"))return false;
+        return zone.equals("Pit") || com.nezurstandalone.engine.PitCombatArea.contains(getCurrentMap().name(),x,y,z);
     }
 
     private static double getDistSq(double x, double z, double tx, double tz) {

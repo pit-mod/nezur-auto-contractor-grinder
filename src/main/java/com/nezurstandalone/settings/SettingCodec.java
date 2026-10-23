@@ -28,6 +28,10 @@ public final class SettingCodec {
     }
     private static int integer(JsonElement e){double v=number(e);if(v!=Math.rint(v) || v<Integer.MIN_VALUE || v>Integer.MAX_VALUE)throw new IllegalArgumentException("Expected integer");return (int)v;}
     public static Runnable decode(Setting s, JsonElement e) {
+        Runnable mutation=decodeValue(s,e);
+        return ()->Setting.restore(mutation);
+    }
+    private static Runnable decodeValue(Setting s, JsonElement e) {
         if(s instanceof ButtonSetting || s instanceof MyauGroupSetting){if(e==null || !e.isJsonNull())throw new IllegalArgumentException("Action has no persisted value");return ()->{};}
         if(s instanceof BooleanSetting){if(e==null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isBoolean())throw new IllegalArgumentException("Expected boolean");boolean v=e.getAsBoolean();return ()->((BooleanSetting)s).setEnabled(v);}
         if(s instanceof NumberSetting){NumberSetting n=(NumberSetting)s;double v=NumberSetting.normalize(number(e),n.min,n.max,n.decimalPlaces);return ()->n.setValue(v);}

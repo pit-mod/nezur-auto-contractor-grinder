@@ -2,7 +2,6 @@ package com.nezurstandalone.combat;
 
 import com.nezurstandalone.input.GuardedInput;
 import com.nezurstandalone.utils.RotationManager;
-import com.nezurstandalone.utils.RotationUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
@@ -31,6 +30,20 @@ public final class CombatAura {
     private final Object inputOwner = new Object();
     private final String rotationOwner = "combat." + java.util.UUID.randomUUID();
     private java.util.function.BooleanSupplier activityAllowed = () -> true;
+    private java.util.function.Predicate<Entity> attackAllowed = entity -> true;
+    private java.util.function.Predicate<Entity> fallbackHitAllowed = entity -> false;
+    public CombatAura(){this("CombatAura");}
+    public CombatAura(String diagnosticOwner){GuardedInput.label(inputOwner,diagnosticOwner);}
+
+    /** Additional timing policy is rechecked both at queue time and native dispatch. */
+    public CombatAura attacksWhen(java.util.function.Predicate<Entity> allowed) {
+        attackAllowed = allowed;
+        return this;
+    }
+    /** Opt-in: a valid enemy intersecting the actual ray can be hit while aim tracks another enemy. */
+    public CombatAura fallbackHitsWhen(java.util.function.Predicate<Entity> allowed) {
+        fallbackHitAllowed=allowed;return this;
+    }
 
     private java.util.function.BooleanSupplier unlistedPitNpcsAllowed = () -> false;
 
@@ -63,6 +76,15 @@ public final class CombatAura {
 
     /** Aim aggression handed to the rotation manager; 10 is unscaled human pace. */
     private float rotationSpeed = 15.0f;
+    private boolean serverSide;
+
+    /** Opt-in only: AutoGrinder and other existing callers retain camera rotations. */
+    public CombatAura serverSideRotations() {
+        serverSide = true;
+        clicker.reactionDelay(false);
+        clicker.nativeTickCadence(true);
+        return this;
+    }
 
     /** Maximum eye-to-raycast-hit distance; never extends native survival reach. */
     private double reach = 3.0;
@@ -103,6 +125,7 @@ public final class CombatAura {
     private final java.util.Random rng = new java.util.Random();
     private double aimOffX, aimOffY, aimOffZ;
     private long lastWanderNanos;
+    private final CombatAim aim=new CombatAim();
     // Kept deliberately small: a wide wander reads as a shaking crosshair. This is just enough to
     // pull the aim off the exact geometric centre without the camera visibly vibrating.
     private static final double WANDER_THETA = 1.4;   // reversion strength, per second (lower = smoother drift)
@@ -152,9 +175,12 @@ public final class CombatAura {
         if (this.target != target) {
             targetGeneration++;
             GuardedInput.cancel(inputOwner);
-            if (!com.nezurstandalone.engine.GrinderEngine.isMidPressureActive(this)) clicker.reset();
+            if ((!serverSide || target == null || this.target == null)
+                    && !com.nezurstandalone.engine.GrinderEngine.isMidPressureActive(this)) clicker.reset();
             RotationManager.getInstance().clearTarget(rotationOwner);
+            if (serverSide) ServerRotations.release(rotationOwner);
             aimOffX = aimOffY = aimOffZ = 0; lastWanderNanos = 0;
+            aim.reset();
             stage = target == null ? Stage.NO_TARGET : Stage.TRACKING;
         }
         this.target = target;
@@ -164,18 +190,30 @@ public final class CombatAura {
         return target;
     }
 
+    /** Current server ray helps multipart targets select the actually hittable part. */
+    public Entity getRayTarget() {
+        net.minecraft.util.MovingObjectPosition hit = serverSide
+                ? ServerRotations.raycast(rotationOwner, reach) : mc.objectMouseOver;
+        return hit == null ? null : hit.entityHit;
+    }
+
     /**
      * Drives aim and clicks for one render frame. Aims at the current target whenever there is
      * one, and lets the clicker fire only while that target is genuinely in reach and inside the
      * click cone — so a click never leaves while the crosshair is still swinging onto a target,
      * which is both correct and the shape of a real hit.
      */
-    public void onRenderFrame() { renderFrame(false); }
+    public void onRenderFrame() { renderFrame(false, false); }
+
+    /** Refresh and evaluate immediately before native input, including frames with multiple game ticks. */
+    public void onNativeInput() { renderFrame(false, true); }
 
     /** Tracking only during AutoHeal: cancel pending attacks without dropping the aim target. */
-    public void onAimOnlyFrame() { renderFrame(true); }
+    public void onAimOnlyFrame() { renderFrame(true, false); }
 
-    private void renderFrame(boolean aimOnly) {
+    private void renderFrame(boolean aimOnly, boolean nativeInput) {
+        if(!com.nezurstandalone.input.NativeActionGate.automationAllowed.getAsBoolean()
+                || !com.nezurstandalone.input.NativeActionGate.combatOperationAllowed.getAsBoolean()){stop();return;}
         if (aimOnly) { GuardedInput.cancel(inputOwner); clicker.reset(); }
         if ((!aimOnly && !activityAllowed.getAsBoolean()) || mc.thePlayer == null || mc.theWorld == null || mc.currentScreen != null
                 || (!aimOnly && mc.thePlayer.isUsingItem()) || target == null || target.isDead
@@ -185,11 +223,17 @@ public final class CombatAura {
         }
 
         advanceWander();
-        float[] rot = RotationUtils.getRotations(target, aimOffX, aimOffY, aimOffZ);
+        float[] rot = aim.rotations(target,reach,aimOffX,aimOffY,aimOffZ);
         // Combat priority + responsive tracking: fast, direct follow of a moving target.
-        RotationManager.getInstance().setTargetRotation(
-                rotationOwner, RotationManager.PRIORITY_COMBAT,
-                rot[0], rot[1], rotationSpeed, true);
+        if (serverSide) {
+            ServerRotations.request(rotationOwner, rot[0], rot[1], rotationSpeed,
+                    activityAllowed, this::hasTarget);
+            if (nativeInput) ServerRotations.frame();
+        } else {
+            RotationManager.getInstance().setTargetRotation(
+                    rotationOwner, RotationManager.PRIORITY_COMBAT,
+                    rot[0], rot[1], rotationSpeed, true);
+        }
 
         if (aimOnly) { stage = Stage.TRACKING; return; }
 
@@ -200,18 +244,38 @@ public final class CombatAura {
             return;
         }
 
+        // Rendering advances aim/cadence. Picking entities is needed only when native input can emit.
+        if (serverSide && !nativeInput) {
+            clicker.onRenderFrame(true, false);
+            return;
+        }
         // The native raycast must identify this target; an angular cone is insufficient.
-        boolean allowed = isCurrentHit(target);
+        boolean allowed = attackTarget()!=null;
         stage = allowed ? Stage.VALID_RAYCAST : Stage.ALIGNING;
         if (!allowed) GuardedInput.cancel(inputOwner);
         // Keep the mid cadence running across aim gaps; dispatch still requires an actual reachable hit.
-        clicker.onRenderFrame(allowed || com.nezurstandalone.engine.GrinderEngine.isMidPressureActive(this));
+        if (serverSide) {
+            // Tracking owns the held trigger before melee range. A miss does not restart its cadence.
+            clicker.onRenderFrame(true, nativeInput && allowed && com.nezurstandalone.input.NativeActionGate.available(true));
+        } else clicker.onRenderFrame(allowed || com.nezurstandalone.engine.GrinderEngine.isMidPressureActive(this));
     }
 
     private boolean isCurrentHit(Entity entity) {
+        net.minecraft.util.MovingObjectPosition hit = serverSide
+                ? ServerRotations.raycast(rotationOwner, reach) : mc.objectMouseOver;
+        return isCurrentHit(entity,hit);
+    }
+    private Entity attackTarget() {
+        net.minecraft.util.MovingObjectPosition hit=serverSide?ServerRotations.raycast(rotationOwner,reach):mc.objectMouseOver;
+        if(hit==null || hit.typeOfHit!=net.minecraft.util.MovingObjectPosition.MovingObjectType.ENTITY)return null;
+        Entity actual=hit.entityHit;
+        if(actual!=target && !fallbackHitAllowed.test(actual))return null;
+        return isCurrentHit(actual,hit)&&attackAllowed.test(actual)?actual:null;
+    }
+    private boolean isCurrentHit(Entity entity,net.minecraft.util.MovingObjectPosition hit) {
         if (entity instanceof EntityPlayer && selectionFilter != null && !selectionFilter.test((EntityPlayer) entity)) return false;
-        net.minecraft.util.MovingObjectPosition hit = mc.objectMouseOver;
-        return activityAllowed.getAsBoolean() && entity != null && mc.thePlayer != null && mc.currentScreen == null
+        return com.nezurstandalone.input.NativeActionGate.combatOperationAllowed.getAsBoolean()
+                && activityAllowed.getAsBoolean() && entity != null && mc.thePlayer != null && mc.currentScreen == null
                 && com.nezurstandalone.contract.ContractCombatPolicy.allowsAttack(entity)
                 && !mc.thePlayer.isUsingItem() && !entity.isDead && entity.worldObj == mc.theWorld
                 && hit != null && hit.typeOfHit == net.minecraft.util.MovingObjectPosition.MovingObjectType.ENTITY
@@ -220,11 +284,16 @@ public final class CombatAura {
     }
 
     private void queueAttack() {
-        if (!isCurrentHit(target)) return;
+        final Entity intended=attackTarget();
+        if(intended==null)return;
         stage = Stage.ATTACK_READY;
         final long generation = targetGeneration;
-        final Entity intended = target;
-        GuardedInput.attack(inputOwner, intended, () -> generation == targetGeneration && target == intended && isCurrentHit(intended));
+        final Entity aimed=target;
+        java.util.function.BooleanSupplier valid = () -> generation == targetGeneration && target == aimed
+                && (intended==target || fallbackHitAllowed.test(intended))
+                && isCurrentHit(intended) && attackAllowed.test(intended);
+        if (serverSide) GuardedInput.attack(inputOwner, intended, valid, () -> ServerRotations.raycast(rotationOwner, reach));
+        else GuardedInput.attack(inputOwner, intended, valid);
         GuardedInput.watch(inputOwner, status -> {
             if (generation != targetGeneration) return;
             if (status == GuardedInput.Status.NATIVE_INVOKED) stage = Stage.COOLDOWN;
@@ -239,7 +308,8 @@ public final class CombatAura {
         clicker.reset();
         com.nezurstandalone.control.Cleanup.run(
             () -> GuardedInput.cancel(inputOwner),
-            () -> RotationManager.getInstance().clearTarget(rotationOwner));
+            () -> RotationManager.getInstance().clearTarget(rotationOwner),
+            () -> { if (serverSide) ServerRotations.release(rotationOwner); });
     }
 
     public boolean hasTarget() {

@@ -53,7 +53,7 @@ public class ModuleButton {
             if ("X Pos".equals(s.name) || "Y Pos".equals(s.name)) {
                 continue;
             }
-            if (!s.isVisible()) {
+            if (!module.isSettingVisible(s)) {
                 continue; // hidden settings (e.g. perk boxes while Auto Perk is off) draw no row
             }
             Component comp = null;
@@ -234,7 +234,7 @@ public class ModuleButton {
     public void refreshVisibility() {
         StringBuilder sb = new StringBuilder();
         for (Setting s : module.settings) {
-            if (s.isVisible()) sb.append(s.name).append(';');
+            if (module.isSettingVisible(s)) sb.append(s.name).append(';');
         }
         String sig = sb.toString();
         if (!sig.equals(lastVisibleSig)) {

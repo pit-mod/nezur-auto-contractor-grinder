@@ -8,7 +8,10 @@
     "client.MixinNetHandlerPlayClient",
     "client.MixinMinecraftInput",
     "client.MixinWorldRevision",
-    "client.MixinEntityRendererCamera"
+    "client.MixinEntityRendererCamera",
+    "client.MixinSilentPlayer",
+    "client.MixinSilentMovement",
+    "client.MixinSilentJump"
   ],
   "required": true,
   "injectors": {

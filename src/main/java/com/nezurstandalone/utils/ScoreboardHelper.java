@@ -55,6 +55,11 @@ public class ScoreboardHelper {
         finally { CHECKING.set(previous); }
     }
 
+    /** Parser view: keep the raw canonical view available to diagnostics. */
+    public static String sidebarName(ScorePlayerTeam team,String name) {
+        return canonicalName(team,SidebarText.entry(name,team!=null));
+    }
+
     public static String[] canonicalParts(ScorePlayerTeam team) {
         boolean previous=CHECKING.get();CHECKING.set(true);
         try { return team==null?new String[]{"", ""}:new String[]{team.getColorPrefix(),team.getColorSuffix()}; }

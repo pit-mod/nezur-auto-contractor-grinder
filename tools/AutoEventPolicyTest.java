@@ -11,6 +11,7 @@ public final class AutoEventPolicyTest {
         combatState.setAccessible(true);
         for(com.nezurstandalone.engine.GrinderEngine.State state:com.nezurstandalone.engine.GrinderEngine.State.values()) {
             boolean expected=state==com.nezurstandalone.engine.GrinderEngine.State.FIGHTING
+                    || state==com.nezurstandalone.engine.GrinderEngine.State.RETURNING_TO_MID
                     || state==com.nezurstandalone.engine.GrinderEngine.State.SPIRE_FIGHTING
                     || state==com.nezurstandalone.engine.GrinderEngine.State.ROBBERY_FIGHTING;
             check(((Boolean)combatState.invoke(null,state))==expected,"Combat permission for "+state);

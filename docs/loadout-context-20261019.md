@@ -1,0 +1,9 @@
+# Repeated loadout inspections after respawn — 2026-10-19
+
+The live Forge log showed Golden Heads, Strength-Chaining and Second Gapple confirmed as already equipped, followed seconds later by those same entries reverting to unknown equipment and requesting another UPGRADES trip. Bonk and Feast were already correctly blocked by their slot levels. This was evidence loss, not a missing level check.
+
+The previous context reader only recognized prestige embedded in a Level bracket, while the live Hypixel sidebar has a separate `Prestige: IV` line. It therefore treated that profile as unidentified and cleared all verified equipment on world replacement or a temporary null world.
+
+LoadoutContext now recognizes separate Prestige lines (Hypixel and Classic), bracket prestige and explicit profile labels. Verified equipment persists across respawn/world replacement/temporary sidebar assembly for the same account, server, game mode, profile and prestige. Gold still becomes invalid on disconnection and is refreshed from the current connected sidebar before any paid action. Actual account/profile/prestige/mode changes reset evidence; unidentified profiles still require revalidation after a world change. Confirmed prestige reset handling and planner level/slot/The Way rules remain active.
+
+LoadoutContextTest has 500 checks, reproducing repeated deaths/world replacements and partial sidebars on both Pit variants after a no-action NPC inspection. It confirms that extra gold cannot bypass level 70 with The Way disabled, that level 69 remains blocked, that level 70 with 1,999 gold is blocked, and that level 71 with 2,000 gold permits Bonk. It also checks real identity/reset changes and unidentified-profile fallback. The test runs in both Forge projects and against the signed Ornithe artifact.

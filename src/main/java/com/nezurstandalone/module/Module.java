@@ -78,6 +78,8 @@ public class Module {
         return settings;
     }
 
+    public boolean isSettingVisible(Setting setting) { return setting.isVisible(); }
+
     public String getName() { return name; }
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
@@ -185,6 +187,7 @@ public class Module {
                     () -> com.nezurstandalone.control.SessionResets.reset(this),
                     () -> com.nezurstandalone.control.InventoryOwner.release(this, true),
                     () -> com.nezurstandalone.control.GuiLease.release(this),
+                    () -> com.nezurstandalone.input.WindowActions.cancel(this),
                     () -> com.nezurstandalone.input.GuardedInput.cancel(this),
                     () -> com.nezurstandalone.control.CommandCoordinator.cancel(this),
                     this::unregisterFromEventBus);

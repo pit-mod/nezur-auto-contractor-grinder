@@ -50,7 +50,7 @@ public final class ContractScoreboardDump {
             if(mc.theWorld==previousWorld && fingerprint.equals(previous))return;
             data.put("worldChanged",mc.theWorld!=previousWorld);
             data.put("capturedAtEpochMs",System.currentTimeMillis());
-            File dir=new File(mc.mcDataDir,"nezur-acg/diagnostics");
+            File dir=new File(mc.mcDataDir,"nezur/diagnostics");
             Files.createDirectories(dir.toPath());
             Path journal=new File(dir,"scoreboard-live.jsonl").toPath();
             if(Files.exists(journal) && Files.size(journal)>4*1024*1024)

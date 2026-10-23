@@ -19,3 +19,7 @@ tools/runtime-classpath.txt
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Python test caches
+__pycache__/
+*.pyc

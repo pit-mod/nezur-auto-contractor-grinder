@@ -11,15 +11,20 @@ public final class EggLocations {
     }
     public static long key(int x,int z){return ((long)x<<32)^(z&0xffffffffL);}
     public void update(int x,int y,int z,boolean egg){
-        long key=key(x>>4,z>>4);Set<Position> positions=chunks.get(key);Position p=new Position(x,y,z);
+        long key=key(x>>4,z>>4);Set<Position> positions=chunks.get(key);
+        if(!egg&&positions==null)return;
+        Position p=new Position(x,y,z);
         if(egg){if(positions==null){positions=new HashSet<>();chunks.put(key,positions);}positions.add(p);}
         else if(positions!=null)positions.remove(p);
     }
     public void unload(int x,int z){chunks.remove(key(x,z));}
     public void clear(){chunks.clear();}
     public Position nearest(double x,double y,double z){
+        return nearest(x,y,z,p -> true);
+    }
+    public Position nearest(double x,double y,double z,java.util.function.Predicate<Position> eligible){
         Position best=null;double distance=Double.POSITIVE_INFINITY;
-        for(Set<Position> ps:chunks.values())for(Position p:ps){double dx=p.x+.5-x,dy=p.y-y,dz=p.z+.5-z;double d=dx*dx+dy*dy+dz*dz;
+        for(Set<Position> ps:chunks.values())for(Position p:ps){if(!eligible.test(p))continue;double dx=p.x+.5-x,dy=p.y-y,dz=p.z+.5-z;double d=dx*dx+dy*dy+dz*dz;
             if(d<distance||(d==distance&&(best==null||p.x<best.x||(p.x==best.x&&(p.y<best.y||(p.y==best.y&&p.z<best.z)))))){best=p;distance=d;}}
         return best;
     }

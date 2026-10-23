@@ -35,7 +35,8 @@ public final class ClickSimulator {
     public static void pulse(Object owner,boolean leftClick){
         if(!com.nezurstandalone.control.InventoryOwner.available(owner)||mc.thePlayer==null)return;
         net.minecraft.util.MovingObjectPosition hit=mc.objectMouseOver;
-        java.util.function.BooleanSupplier allowed=()->com.nezurstandalone.control.InventoryOwner.available(owner);
+        java.util.function.BooleanSupplier allowed=()->com.nezurstandalone.control.InventoryOwner.available(owner)
+                && (!leftClick || NativeActionGate.combatOperationAllowed.getAsBoolean());
         if(leftClick){if(hit!=null&&hit.entityHit!=null)GuardedInput.attack(owner,hit.entityHit,allowed);}
         else if(hit!=null&&hit.entityHit!=null)GuardedInput.useEntity(owner,hit.entityHit,allowed);
         else if(hit!=null&&hit.getBlockPos()!=null)GuardedInput.useBlock(owner,hit.getBlockPos(),allowed);

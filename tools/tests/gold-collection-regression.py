@@ -15,6 +15,7 @@ def population(s):
  return s[a:b]
 fixture='''import java.util.*;import com.nezurstandalone.contract.*;
 class NumberSetting{double value;NumberSetting(String n,double v,double a,double b,int z){value=v;}}
+class AutoReconnect{static boolean hold;static boolean holdLobbySwapForCarePackage(){return hold;}}
 class Flag{boolean enabled;Flag(boolean v){enabled=v;}boolean isEnabled(){return enabled;}}
 class Entity{double posX,posY,posZ;boolean isDead;int id;int getEntityId(){return id;}double getDistanceToEntity(Entity e){double x=posX-e.posX,y=posY-e.posY,z=posZ-e.posZ;return Math.sqrt(x*x+y*y+z*z);}}
 class Player extends Entity{boolean onGround=true,using;float rotationYaw;boolean isUsingItem(){return using;}}
@@ -32,6 +33,7 @@ class RotationManager{static final int PRIORITY_COMBAT=1;static RotationManager 
 class AutoGrinder{boolean hasTemporaryPerkLease(){return false;}boolean isToggled(){return false;}}
 class Connection{int requests;void requestSwap(long now){requests++;}}
 public class GoldRegression {
+ static class Server {String serverIP="hypixel.net";} Server server=new Server();
  static class Board{boolean active=true;ContractOffer.Type type=ContractOffer.Type.COLLECT_GOLD_INGOTS;int current=2,target=12;}
  enum State{FINDING_CONTRACTOR,CHECKING_SCOREBOARD,EXECUTING_CONTRACT,LOBBY_SWITCHING,IDLE}
  MC mc=new MC();Board scoreboard=new Board();State state=State.EXECUTING_CONTRACT;Object rotationOwner=new Object();long nextAction,lowGoldSince,thinLobbySince=1;int networkMidCount=0;NumberSetting minMidPlayers=new NumberSetting("mid",5,1,20,0);Flag lobbySwap=new Flag(true),nightQuestSupport=new Flag(false);boolean gappleActive,nightQuestActive;long nextNightQuestTime;
@@ -47,7 +49,7 @@ public class GoldRegression {
  static void check(boolean ok,String what){if(!ok)throw new AssertionError(what);}
  public static void main(String[] a){boolean modified=a[0].equals("modified");GoldRegression g=new GoldRegression();ContractCombatPolicy.type=ContractOffer.Type.COLLECT_GOLD_INGOTS;
  boolean swap=g.shouldLobbySwap();g.population(15000);System.out.println("EMPTY_MID grinderSwap="+swap+" contractorSwap="+(g.connection.requests>0));check(swap==!modified,"grinder population");check((g.connection.requests>0)==!modified,"contractor population");
- ContractCombatPolicy.type=ContractOffer.Type.KILL_PLAYERS;g.scoreboard.type=ContractOffer.Type.KILL_PLAYERS;g.connection.requests=0;g.thinLobbySince=1;g.population(15000);check(g.shouldLobbySwap()&&g.connection.requests==1,"ordinary population policy preserved");
+ ContractCombatPolicy.type=ContractOffer.Type.KILL_PLAYERS;g.scoreboard.type=ContractOffer.Type.KILL_PLAYERS;g.connection.requests=0;g.thinLobbySince=1;g.population(15000);check(g.shouldLobbySwap()&&g.connection.requests==1,"ordinary population policy preserved");AutoReconnect.hold=true;check(!g.shouldLobbySwap(),"care package pauses intentional swap");AutoReconnect.hold=false;
  g=new GoldRegression();g.drop(10,48);g.tickGold(1000);System.out.println("SCAN_48 target="+(g.goldTarget!=null)+" radius="+g.goldScanRadius.value);check((g.goldTarget!=null)==modified,"long range scan");
  g=new GoldRegression();g.drop(42,1);g.tickGold(1000);g.tickGold(2201);System.out.println("STUCK_1200 forward="+com.nezurstandalone.control.MovementKeys.down(1)+" left="+com.nezurstandalone.control.MovementKeys.down(2)+" jump="+com.nezurstandalone.control.MovementKeys.down(4));check(com.nezurstandalone.control.MovementKeys.down(1)==!modified,"stop straight pushing");check(com.nezurstandalone.control.MovementKeys.down(2)==modified,"sidestep");g.tickGold(2602);g.tickGold(3803);if(modified)check(com.nezurstandalone.control.MovementKeys.down(3),"alternate recovery");g.tickGold(4204);g.tickGold(5405);System.out.println("BOUNDED_RECOVERY abandoned="+(g.goldTarget==null));check((g.goldTarget==null)==modified,"bounded retries");g.drop(43,48);g.tickGold(5410);if(modified)check(g.goldTarget.id==43,"skip blocked drop");
  g=new GoldRegression();EntityItem dead=g.drop(99,1);g.tickGold(1000);dead.isDead=true;EntityItem next=g.drop(100,30);g.tickGold(1300);check(g.goldTarget==next,"despawn retarget");check(g.scoreboard.current==2&&g.lastGoldProgress==2,"scoreboard truth");System.out.println("DESPAWN retarget=true scoreboardProgress="+g.lastGoldProgress);
@@ -72,6 +74,8 @@ for mode in ['modified']:
  body=body.replace('net.minecraft.entity.item.EntityItem','EntityItem').replace('net.minecraft.entity.player.EntityPlayer','EntityPlayer');(w/'GoldRegression.java').write_text(body,encoding='utf-8')
  for rel,content in stubs.items():f=w/rel;f.parent.mkdir(parents=True,exist_ok=True);f.write_text(content)
  for name in ['GoldPickupRecovery','ContractStuckWatch']:shutil.copy2(c/('src/main/java/com/nezurstandalone/contract/'+name+'.java'),w/('com/nezurstandalone/contract/'+name+'.java'))
+ (w/'com/nezurstandalone/control').mkdir(parents=True,exist_ok=True)
+ shutil.copy2(c/'src/main/java/com/nezurstandalone/control/LowestClassicPit.java',w/'com/nezurstandalone/control/LowestClassicPit.java')
  classes=w/'classes';classes.mkdir(exist_ok=True)
  for cmd in [[str(j/('javac.exe' if os.name=='nt' else 'javac')),'-encoding','UTF-8','-source','8','-target','8','-d',str(classes),*map(str,w.rglob('*.java'))],[str(j/('java.exe' if os.name=='nt' else 'java')),'-cp',str(classes),'GoldRegression',mode]]:
   q=subprocess.run(cmd,capture_output=True,text=True);events.append({'cmd':cmd,'exit':q.returncode,'stdout':q.stdout,'stderr':q.stderr});(d/'behavior-events.json').write_text(json.dumps(events,indent=2));print(mode,q.stdout,q.stderr);assert q.returncode==0

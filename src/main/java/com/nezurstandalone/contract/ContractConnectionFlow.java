@@ -10,24 +10,29 @@ public final class ContractConnectionFlow {
     private long nextAt;
     private int attempts;
     private boolean swapping;
+    private java.util.function.BooleanSupplier swapAllowed=()->true;
     public static boolean hypixelHost(String address) {
         if(address==null)return false;
         String host=address.trim().toLowerCase(Locale.ROOT).split(":",2)[0];
         return host.equals("hypixel.net") || host.endsWith(".hypixel.net");
     }
-    public void reset(){location=Location.UNKNOWN;nextAt=0;attempts=0;swapping=false;}
+    public void reset(){location=Location.UNKNOWN;nextAt=0;attempts=0;swapping=false;swapAllowed=()->true;}
     public void observe(Location value,long now,long delay) {
         if(value==location)return;
         location=value;attempts=0;nextAt=now+delay;
         if(value==Location.PIT)swapping=false;
     }
-    public void requestSwap(long now) {
+    public void requestSwap(long now) {requestSwap(now,()->true);}
+    public void requestSwap(long now,java.util.function.BooleanSupplier allowed) {
         if(location!=Location.PIT || swapping)return;
-        swapping=true;attempts=0;nextAt=now+1000;
+        if(!allowed.getAsBoolean())return;
+        swapAllowed=allowed;swapping=true;attempts=0;nextAt=now+1000;
     }
-    public boolean swapping(){return swapping;}
+    public void cancelSwap(){if(swapping){swapping=false;attempts=0;nextAt=0;}swapAllowed=()->true;}
+    public boolean swapping(){if(swapping&&!swapAllowed.getAsBoolean())cancelSwap();return swapping;}
     public long nextAt(){return nextAt;}
     public Action action(long now,boolean inSpawn) {
+        swapping();
         if(now<nextAt)return Action.NONE;
         switch(location) {
             case PIT:return swapping?(inSpawn?Action.LEAVE:Action.RETURN_TO_SPAWN):Action.NONE;

@@ -1,0 +1,229 @@
+=========================================================
+MENU TITLE : "Quests & Contracts"
+GUI CLASS  : net.minecraft.unmapped.C_80147496
+SIZE       : 45 slots
+---------------------------------------------------------
+SLOT 4
+   id=3  meta=0  count=1
+   name="The Pit Quests & Contracts"
+   raw ="&aThe Pit Quests & Contracts"
+   lore: View quests and contracts that you
+   lore: can complete by playing The Pit.
+
+SLOT 12
+   id=339  meta=0  count=1
+   name="Daily Quest: Hunter"
+   raw ="&aDaily Quest: Hunter"
+   lore: Kill 25 Players
+   lore:
+   lore: Rewards:
+   lore: +2,200 PitRemake Experience
+   lore: +1,000 Pit Gold
+   lore: +2,200 Event Experience
+   lore:
+   lore: Daily Quests can be completed once every
+   lore: day.
+   lore:
+   lore: Click to start this quest.
+
+SLOT 13
+   id=339  meta=0  count=1
+   name="Daily Quest: Contracted"
+   raw ="&aDaily Quest: Contracted"
+   lore: Complete a Contract
+   lore:
+   lore: Rewards:
+   lore: +3,300 PitRemake Experience
+   lore: +1,000 Pit Gold
+   lore: +3,300 Event Experience
+   lore:
+   lore: Daily Quests can be completed once every
+   lore: day.
+   lore:
+   lore: Click to start this quest.
+
+SLOT 14
+   id=339  meta=0  count=1
+   name="Weekly Quest: Double Up"
+   raw ="&aWeekly Quest: Double Up"
+   lore: Collect 10,000 Gold
+   lore:
+   lore: Rewards:
+   lore: +7,700 PitRemake Experience
+   lore: +10,000 Pit Gold
+   lore: +7,700 Event Experience
+   lore:
+   lore: Weekly Quests can be completed once every
+   lore: week. Resets Thursday night.
+   lore:
+   lore: Click to start this quest.
+
+SLOT 30
+   id=403  meta=0  count=1
+   name="Novice Contract"
+   raw ="&aNovice Contract"
+   lore: Get a choice of 3 easy contracts.
+   lore:
+   lore: Pay the request cost, then earn a
+   lore: greater reward on completion.
+   lore:
+   lore: Daily contracts: 4
+   lore:
+   lore: Cost: 250g
+   lore: Click to request!
+
+SLOT 32
+   id=403  meta=0  count=1
+   name="Big Time Contract"
+   raw ="&aBig Time Contract"
+   lore: Get a choice of 3 hard contracts.
+   lore:
+   lore: Pay the request cost, then earn a
+   lore: greater reward on completion.
+   lore:
+   lore: Daily contracts: 4
+   lore:
+   lore: Cost: 1,000g
+   lore: Click to request!
+
+=========================================================
+
+=========================================================
+MENU TITLE : "Are you sure?"
+GUI CLASS  : net.minecraft.unmapped.C_80147496
+SIZE       : 27 slots
+---------------------------------------------------------
+SLOT 11
+   id=403  meta=0  count=1
+   name="Confirm"
+   raw ="&aConfirm"
+   lore: Purchase: Big Time Contract
+   lore: Cost: 1,000g
+
+SLOT 15
+   id=159  meta=14  count=1
+   name="Cancel"
+   raw ="&cCancel"
+
+=========================================================
+
+=========================================================
+MENU TITLE : "Pick a contract!"
+GUI CLASS  : net.minecraft.unmapped.C_80147496
+SIZE       : 27 slots
+---------------------------------------------------------
+SLOT 11
+   id=403  meta=0  count=1
+   name="Choice #1"
+   raw ="&5Choice #1"
+   lore: Big Time Contract
+   lore:
+   lore: Task:
+   lore: Catch 1 diamond swords from
+   lore: fishing.
+   lore:
+   lore: Time limit: 10 minutes
+   lore: Reward: 2,738g + 2 Chunks of Vile
+   lore:
+   lore: Click to pick!
+
+SLOT 13
+   id=403  meta=0  count=1
+   name="Choice #2"
+   raw ="&5Choice #2"
+   lore: Big Time Contract
+   lore:
+   lore: Task:
+   lore: Collect 25 gold ingots from the
+   lore: ground.
+   lore:
+   lore: Time limit: 10 minutes
+   lore: Reward: 2,674g + 2 Chunks of Vile
+   lore:
+   lore: Click to pick!
+
+SLOT 15
+   id=403  meta=0  count=1
+   name="Choice #3"
+   raw ="&aChoice #3"
+   lore: Big Time Contract
+   lore:
+   lore: Task:
+   lore: Chain 3 kills.
+   lore:
+   lore: Time limit: 10 minutes
+   lore: Reward: 2,141g
+   lore:
+   lore: Click to pick!
+
+=========================================================
+
+=========================================================
+MENU TITLE : "Quests & Contracts"
+GUI CLASS  : net.minecraft.unmapped.C_80147496
+SIZE       : 45 slots
+---------------------------------------------------------
+SLOT 4
+   id=3  meta=0  count=1
+   name="The Pit Quests & Contracts"
+   raw ="&aThe Pit Quests & Contracts"
+   lore: View quests and contracts that you
+   lore: can complete by playing The Pit.
+
+SLOT 12
+   id=339  meta=0  count=1
+   name="Daily Quest: Hunter"
+   raw ="&aDaily Quest: Hunter"
+   lore: Kill 25 Players (0/25)
+   lore:
+   lore: Rewards:
+   lore: +2,200 PitRemake Experience
+   lore: +1,000 Pit Gold
+   lore: +2,200 Event Experience
+   lore:
+   lore: Daily Quests can be completed once every
+   lore: day.
+   lore:
+   lore: You've already started this quest!
+
+SLOT 13
+   id=339  meta=0  count=1
+   name="Daily Quest: Contracted"
+   raw ="&aDaily Quest: Contracted"
+   lore: Complete a Contract (0/1)
+   lore:
+   lore: Rewards:
+   lore: +3,300 PitRemake Experience
+   lore: +1,000 Pit Gold
+   lore: +3,300 Event Experience
+   lore:
+   lore: Daily Quests can be completed once every
+   lore: day.
+   lore:
+   lore: You've already started this quest!
+
+SLOT 14
+   id=339  meta=0  count=1
+   name="Weekly Quest: Double Up"
+   raw ="&aWeekly Quest: Double Up"
+   lore: Collect 10,000 Gold (0/10,000)
+   lore:
+   lore: Rewards:
+   lore: +7,700 PitRemake Experience
+   lore: +10,000 Pit Gold
+   lore: +7,700 Event Experience
+   lore:
+   lore: Weekly Quests can be completed once every
+   lore: week. Resets Thursday night.
+   lore:
+   lore: You've already started this quest!
+
+SLOT 31
+   id=403  meta=0  count=1
+   name="Pending choice..."
+   raw ="&aPending choice..."
+   lore: Big Time Contract
+   lore:
+   lore: Click to view choices!
+
+=========================================================

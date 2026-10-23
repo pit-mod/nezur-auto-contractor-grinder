@@ -552,10 +552,12 @@ public class HudEditorScreen extends GuiScreen implements GuiExitAnimator.ExitRe
         }
 
         public int getWidth() {
+            if ((module instanceof com.nezurstandalone.engine.GrinderEngine || module instanceof com.nezurstandalone.module.impl.player.AutoContractor)) return hud.getHudWidth();
             return 110;
         }
 
         public int getHeight() {
+            if ((module instanceof com.nezurstandalone.engine.GrinderEngine || module instanceof com.nezurstandalone.module.impl.player.AutoContractor)) return hud.getHudHeight();
             return 16;
         }
 
@@ -617,6 +619,16 @@ public class HudEditorScreen extends GuiScreen implements GuiExitAnimator.ExitRe
             int y = getDrawY();
             int w = getWidth();
             int h = getHeight();
+            if (module instanceof com.nezurstandalone.engine.GrinderEngine) {
+                ((com.nezurstandalone.engine.GrinderEngine) module).editorPreview(x,y,alpha);
+                if(select>0.01f) { GuiDraw.rect(x,y-2,x+w,y-1,GuiTheme.ACCENT); GuiDraw.rect(x,y+h+1,x+w,y+h+2,GuiTheme.ACCENT); }
+                return;
+            }
+            if (module instanceof com.nezurstandalone.module.impl.player.AutoContractor) {
+                ((com.nezurstandalone.module.impl.player.AutoContractor) module).editorPreview(x,y,alpha);
+                if(select>0.01f) { GuiDraw.rect(x,y-2,x+w,y-1,GuiTheme.ACCENT); GuiDraw.rect(x,y+h+1,x+w,y+h+2,GuiTheme.ACCENT); }
+                return;
+            }
             boolean on = module.isToggled();
 
             int fill = on ? GuiTheme.ROW_BG_HOVER : GuiChrome.tinted(0x33141418, GuiTheme.DANGER, 0.45f);

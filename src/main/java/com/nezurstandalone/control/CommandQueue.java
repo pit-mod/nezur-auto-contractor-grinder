@@ -33,6 +33,7 @@ public final class CommandQueue {
         Sequence s=new Sequence(owner,++serial,session,commands.clone());
         if(queue.size()>=256){s.status(Status.REJECTED);return s;}queue.addLast(s);return s;
     }
+    public void clear(){java.util.List<Sequence> all=new ArrayList<>(queue);queue.clear();cancelAll(all);}
     public boolean empty(){return queue.isEmpty();}
     public void cancel(Object owner){java.util.List<Sequence> cancelled=new ArrayList<>();for(Iterator<Sequence> i=queue.iterator();i.hasNext();){Sequence s=i.next();if(s.owner==owner){i.remove();cancelled.add(s);}}cancelAll(cancelled);}
     public void session(long token){java.util.List<Sequence> cancelled=new ArrayList<>();for(Iterator<Sequence> i=queue.iterator();i.hasNext();){Sequence s=i.next();if(s.session!=token){i.remove();cancelled.add(s);}}cancelAll(cancelled);}

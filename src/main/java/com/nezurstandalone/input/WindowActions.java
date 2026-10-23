@@ -13,7 +13,10 @@ public final class WindowActions {
         MenuResultContract contract;
     }
     public static void cancel(Object owner){actions.remove(owner);GuiLease.release(owner);}
+    public static boolean pending(Object owner){return actions.containsKey(owner);}
+    public static boolean anyPending(){long session=ClientSession.current();for(Action action:actions.values())if(action.session==session)return true;return false;}
     public static boolean ready(Object owner) {
+
         Action a=actions.get(owner);if(a==null)return true;
         Minecraft mc=Minecraft.getMinecraft();
         MenuResultContract.Result result=a.contract.result(ClientSession.current(),Clock.SYSTEM.nanos(),
@@ -28,6 +31,7 @@ public final class WindowActions {
         actions.remove(owner);return true;
     }
     public static void click(Object owner,int window,int slot,int button,int mode) {
+
         Minecraft mc=Minecraft.getMinecraft();
         if(!GuiLease.owns(owner)||!ready(owner)||mc.thePlayer==null||mc.thePlayer.openContainer.windowId!=window)
             throw new IllegalStateException("No inventory lease or unacknowledged click");

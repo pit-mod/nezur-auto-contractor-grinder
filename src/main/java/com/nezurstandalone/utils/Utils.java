@@ -105,7 +105,7 @@ public class Utils {
 
         for (net.minecraft.scoreboard.Score score : scores) {
             net.minecraft.scoreboard.ScorePlayerTeam team = scoreboard.getPlayersTeam(score.getPlayerName());
-            lines.add(net.minecraft.util.StringUtils.stripControlCodes(ScoreboardHelper.canonicalName(team, score.getPlayerName())));
+            lines.add(net.minecraft.util.StringUtils.stripControlCodes(ScoreboardHelper.sidebarName(team, score.getPlayerName())));
         }
 
         java.util.Collections.reverse(lines);
@@ -165,17 +165,7 @@ public class Utils {
     }
 
     public static int getStreak() {
-        for (String line : getScoreboardLines()) {
-            if (line.contains("Streak:")) {
-                String streakStr = line.split("Streak:")[1].replaceAll("[^0-9,]", "").replace(",", "");
-                try {
-                    return Integer.parseInt(streakStr);
-                } catch (NumberFormatException e) {
-                    return 0;
-                }
-            }
-        }
-        return 0;
+        return Math.max(0,PitStreak.read(getScoreboardLines()));
     }
 
     public static boolean isInSpawn() {

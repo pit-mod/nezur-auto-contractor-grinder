@@ -1,60 +1,18 @@
 package com.nezurstandalone.combat;
 
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.settings.KeyBinding;
 
 import java.util.Random;
 
 /**
- * A human-shaped click source for the combat / autogrinder system.
+ * Shared combat/autogrinder click scheduler. Drivers advance timing separately from deciding
+ * whether aim, reach and input ownership permit an intent. Emission uses the configured owner
+ * queue or ClickSimulator; the native input gate retains responsibility for dispatch and rate limits.
  *
- * <p>Not a module and not on any event bus: it holds no state the game owns and registers
- * nothing. A driver (the future combat module) constructs one, configures it, and pumps it
- * once per render frame with a gate that says whether clicking is warranted this instant. The
- * clicker owns only the <em>timing</em> — when a click may leave — and emits it through the
- * exact vanilla input path a real click takes.
- *
- * <h2>Why the emission path matters</h2>
- * A click is delivered by {@link KeyBinding#onTick(int)} on the bound attack (or use) key.
- * That is the same call the game makes when it polls the keyboard/mouse: it queues one press
- * that vanilla drains in {@code runTick} as an ordinary click, producing an ordinary swing and
- * an ordinary attack packet. There is no synthetic packet, no reflection into the network
- * handler, nothing that looks different on the wire from a mouse the player pressed. Everything
- * clever here is about <em>when</em> that call happens, never about faking what it produces.
- *
- * <h2>What "human-shaped" means, concretely</h2>
- * A naive autoclicker is caught not because a click looks wrong but because the <em>sequence</em>
- * of inter-click gaps does. Four properties separate a person from a loop, and this models all
- * four rather than only the first:
- *
- * <ol>
- *   <li><b>The rate drifts.</b> A person speeds up and slows down over seconds; they do not hold
- *       a fixed CPS. The base rate is an Ornstein–Uhlenbeck process — a mean-reverting random
- *       walk — so it wanders smoothly and is autocorrelated in time, the way a hand is, instead
- *       of being redrawn independently every click (which is white noise and separable from a
- *       hand by its flat spectrum).</li>
- *   <li><b>The gaps are log-normal, not Gaussian.</b> Human motor intervals are right-skewed:
- *       many gaps near the mode, a tail of longer ones, and a hard floor no one beats. A
- *       symmetric Gaussian has the wrong shape and can even propose negative gaps. Each interval
- *       is the base period times {@code exp(N(0, sigma))}.</li>
- *   <li><b>Doubles happen.</b> Real clicking occasionally fires two taps almost together — a
- *       physical double-tap. A small per-click chance collapses the next gap to a burst
- *       interval, which is what puts the short-tail mass a person's histogram has and a metronome
- *       never does.</li>
- *   <li><b>Attention lapses.</b> Every so often a gap is much longer than the rate would predict
- *       — a glance away, a readjustment. A small chance of a long pause supplies the long tail.</li>
- * </ol>
- *
- * <p>On top of that: engaging a fresh target costs a reaction delay before the first click (a
- * person does not click the frame a target enters reach), releasing the gate clears the schedule
- * so clicking actually stops, and a hard per-server-tick clamp guarantees at most one attack is
- * queued per game tick — two hits in one tick is not something a hand can do and is a clean flag.
- *
- * <h2>Honest limits</h2>
- * This makes the click stream statistically hard to separate from a human's by the usual
- * interval heuristics. It is not, and cannot be, "provably undetected": a server that correlates
- * clicks with server-authoritative aim, or simply rate-limits, is a different problem that timing
- * shape does not address. Treat this as one well-built layer, not a guarantee.
+ * <p>The configured rate can drift within its band, with multiplicative interval jitter and
+ * optional short/long intervals. These are scheduling policies, not evidence of human input or
+ * anticheat acceptance. Server combat opts into deadline phase correction for the 20 Hz input
+ * grid; other callers retain dispatch-relative scheduling. Missed deadlines never queue a backlog.
  */
 public final class AutoClicker {
     private com.nezurstandalone.control.Clock clock = com.nezurstandalone.control.Clock.SYSTEM;
@@ -85,13 +43,11 @@ public final class AutoClicker {
     private double maxCps = 12.0;
 
     /**
-     * Spread of the per-click log-normal jitter, in natural-log units. 0.18 gives a coefficient
-     * of variation on the gaps of roughly 18% — squarely in the range measured off real players,
-     * loose enough not to read as a metronome, tight enough not to read as random noise.
+     * Spread of per-click log-normal interval jitter, in natural-log units.
      */
     private double jitterSigma = 0.18;
 
-    /** Hard floor on the gap between two clicks, ms. Nothing a hand does beats this. */
+    /** Configured floor on the sampled interval in milliseconds. */
     private long minIntervalMs = 46;
 
     /** Per-click chance the next gap collapses into a double-tap burst. */
@@ -109,11 +65,17 @@ public final class AutoClicker {
     private double reactionSigma = 0.30;
     private long reactionMinMs = 110;
     private long reactionMaxMs = 380;
+    private boolean reactionDelay = true;
+    private boolean nativeTickCadence;
+
+    /** Opt-in for a held combat trigger: aim/reach validation remains the emitter's responsibility. */
+    public AutoClicker reactionDelay(boolean enabled) { reactionDelay = enabled; return this; }
+    /** Preserve deadline phase across the native 20 Hz input grid without accumulating missed clicks. */
+    public AutoClicker nativeTickCadence(boolean enabled) { nativeTickCadence = enabled; return this; }
 
     /**
-     * At most one queued attack per server tick. Left on for combat: two attacks in a single
-     * 50 ms tick is physically impossible for a mouse and a textbook flag. A pure block/place
-     * clicker with no combat meaning can turn it off.
+     * At most one queued attack per client tick. Server ticks and packet arrival times can
+     * differ; the native budget separately controls bursts using actual elapsed time.
      */
     private boolean oneClickPerTick = true;
 
@@ -136,11 +98,11 @@ public final class AutoClicker {
         return this;
     }
 
-    /** Sustained human ceiling. Sliders can be dragged past it; the emitted rate cannot. */
+    /** Maximum supported configured rate, shared with the native action budget. */
     public static final double MAX_CPS = 14.0;
 
     /** Sets the CPS band the live rate wanders inside. Order-insensitive; both must be &gt; 0.
-     *  Clamped to {@link #MAX_CPS} so no slider can configure a superhuman sustained rate. */
+     *  Clamped to {@link #MAX_CPS}. */
     public AutoClicker cps(double min, double max) {
         double oldMin = this.minCps, oldMax = this.maxCps;
         this.minCps = Math.max(0.1, Math.min(min, max));
@@ -187,27 +149,28 @@ public final class AutoClicker {
     /**
      * Pump the clicker for one render frame.
      *
-     * <p>Called every frame, sub-tick, so the emission time can land anywhere inside a game tick
-     * rather than being quantised to the 20 Hz client tick — a click train pinned to tick
-     * boundaries is itself a signature. {@code allowed} is the driver's gate: true only while a
-     * click is genuinely warranted (a target is in reach, a weapon is held, the screen is closed,
-     * whatever the combat module decides). The clicker never decides <em>whether</em> to fight,
-     * only the timing of the clicks once told it may.
+     * <p>{@code allowed} combines the driver's engagement and emission gates. Drivers that
+     * track outside reach use the two-argument overload to advance timing without emitting.
+     * Actual server combat dispatch remains in the native input phase.
      */
     public void onRenderFrame(boolean allowed) {
+        onRenderFrame(allowed, allowed);
+    }
+
+    /** Keep a tracking trigger armed through brief aim/range gaps without consuming a click. */
+    public void onRenderFrame(boolean armed, boolean mayEmit) {
         if (mc.thePlayer == null || mc.theWorld == null) {
             reset();
             return;
         }
 
         long now = clock.nanos() / 1_000_000L;
-        double dt = lastFrameMs == 0 ? 0.0 : Math.min(0.1, (now - lastFrameMs) / 1000.0);
+        long elapsed = lastFrameMs == 0 ? 0 : now - lastFrameMs;
+        double dt = Math.min(0.1, elapsed / 1000.0);
         lastFrameMs = now;
 
-        if (!allowed) {
-            // Releasing the gate has to actually stop the hand. Clearing the schedule means the
-            // next engagement pays a fresh reaction delay instead of firing instantly on a gap
-            // that was already due — which is both correct behaviour and a thing a person does.
+        if (!armed) {
+            // Releasing the trigger clears the schedule; the next engagement starts fresh.
             gateOpen = false;
             return;
         }
@@ -215,13 +178,14 @@ public final class AutoClicker {
         if (!gateOpen) {
             // Gate just opened: seed the reaction delay before the first click.
             gateOpen = true;
-            nextClickAtMs = now + sampleLogNormalMs(reactionMedianMs, reactionSigma,
-                    reactionMinMs, reactionMaxMs);
+            nextClickAtMs = now + (reactionDelay ? sampleLogNormalMs(reactionMedianMs, reactionSigma,
+                    reactionMinMs, reactionMaxMs) : 0);
         }
 
         advanceRate(dt);
+        if (nativeTickCadence && elapsed > 250 && nextClickAtMs < now) nextClickAtMs = now;
 
-        if (now < nextClickAtMs) {
+        if (!mayEmit || now < nextClickAtMs) {
             return;
         }
 
@@ -235,8 +199,14 @@ public final class AutoClicker {
             lastEmitTick = tick;
         }
 
+        long scheduled = nextClickAtMs;
         emitClick();
-        nextClickAtMs = now + Math.max((long) Math.ceil(1000.0 / maxCps), nextGapMs());
+        long gap = Math.max((long) Math.ceil(1000.0 / maxCps), nextGapMs());
+        // Rounding every interval from its dispatch time repeatedly discards the tick-grid remainder.
+        // Carry less than one native tick of phase, while always putting the next deadline in the future.
+        // Clamp excess lateness rather than dropping the whole remainder after a pacing/raycast gap.
+        long basis = nativeTickCadence ? Math.max(scheduled, now - Math.min(49, gap - 1)) : now;
+        nextClickAtMs = basis + gap;
     }
 
     /** Convenience: gate on and pump in one call. */
@@ -266,9 +236,8 @@ public final class AutoClicker {
 
     /**
      * Advances the Ornstein–Uhlenbeck rate one frame and keeps it inside the band by reflection.
-     * Reflecting rather than clamping matters: a hard clamp would let the rate sit pinned to a
-     * bound for a stretch, which shows up as a flat run in the CPS trace; reflection turns it
-     * around and keeps the walk moving the way a real one does.
+     * Reflection keeps ordinary samples moving through the configured band instead of
+     * accumulating them at its boundaries.
      */
     private void advanceRate(double dt) {
         double mean = (minCps + maxCps) / 2.0;
@@ -311,9 +280,7 @@ public final class AutoClicker {
     }
 
     /**
-     * Queues exactly one press on the bound button through the vanilla input path. Nothing here
-     * touches the network directly — the queued press becomes a normal click, swing and attack
-     * packet inside {@code runTick}, identical to a hardware press.
+     * Queues one intent for native dispatch. This scheduler does not send packets directly.
      */
     private void emitClick() {
         if (emitter != null) {

@@ -3,6 +3,7 @@ package com.nezurstandalone.control;
 public final class SlotLease {
     private Object owner; private long session,generation; private int original,selected,priority;
     private void refresh(long token,int current){if(owner!=null&&(session!=token||selected!=current)){owner=null;generation++;}}
+    public void invalidate(){owner=null;generation++;}
     public Object owner(){return owner;}
     public long generation(){return generation;}
     public boolean available(Object who,long token,int current){refresh(token,current);return owner==null||owner==who;}
