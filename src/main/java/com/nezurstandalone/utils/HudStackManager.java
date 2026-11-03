@@ -8,26 +8,22 @@ import net.minecraft.client.Minecraft;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
- * Keeps on-screen HUD modules from overlapping by pushing them down within the same column in-game.
- * Sorts stacked lists descending by content height so lists with the most entries appear on top
- * and lists with the least entries appear at the bottom.
+ * Packs visible HUD lists in saved order, using their actual rendered bounds.
  */
 public class HudStackManager {
-    private static final int COLUMN_WIDTH = 80;
-    private static final int GAP = 5;
-
     private static final Map<String, Integer> resolvedY = new HashMap<>();
-    private static final Map<Integer, Integer> columnBottoms = new HashMap<>();
+    private static final Map<String, com.nezurstandalone.control.HudListLayout.Box> measured = new HashMap<>();
+    private static boolean dirty=true;
+    private static final java.util.List<DraggableHud> auxiliary = new java.util.ArrayList<>();
+    private static final java.util.List<Module> hudModules = new java.util.ArrayList<>();
+    public static void registerAuxiliary(DraggableHud hud) { auxiliary.add(hud); }
 
     public static void markDirty() {
+        dirty=true;
     }
 
     @SubscribeEvent
@@ -38,12 +34,12 @@ public class HudStackManager {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc.thePlayer == null || Nezur.moduleManager == null) {
             resolvedY.clear();
-            columnBottoms.clear();
+            measured.clear();
             return;
         }
         if (mc.currentScreen instanceof HudEditorScreen) {
             resolvedY.clear();
-            columnBottoms.clear();
+            measured.clear();
             return;
         }
         rebuild();
@@ -51,38 +47,42 @@ public class HudStackManager {
 
     private static void rebuild() {
         resolvedY.clear();
-        columnBottoms.clear();
-
-        List<DraggableHud> visible = new ArrayList<>();
-        for (Module module : Nezur.moduleManager.getModules()) {
-            if (!module.isToggled() || !(module instanceof DraggableHud)) {
-                continue;
-            }
-            DraggableHud hud = (DraggableHud) module;
-            if (hud.isHudVisible()) {
-                visible.add(hud);
-            }
+        measured.clear();
+        hudModules.clear();
+        dirty=false;
+        for(Module module:Nezur.moduleManager.getModules()){
+            if(!(module instanceof DraggableHud))continue;
+            hudModules.add(module);
+            if(!module.isToggled())continue;
+            DraggableHud hud=(DraggableHud)module;
+            measured.put(hud.getHudKey(),measure(hud));
         }
-
-        // Sort stacked lists so modules with the MOST active entries/height are placed on top (first),
-        // and modules with the LEAST entries/height are placed on bottom (last).
-        Collections.sort(visible, Comparator
-                .comparingInt((DraggableHud hud) -> hud.getHudY() / 30)
-                .thenComparing((a, b) -> Integer.compare(b.getHudHeight(), a.getHudHeight()))
-                .thenComparingInt(DraggableHud::getHudX)
-                .thenComparing(DraggableHud::getHudKey));
-
-        for (DraggableHud hud : visible) {
-            int width = Math.max(1, hud.getHudWidth());
-            int height = Math.max(1, hud.getHudHeight());
-            int x = HudBounds.clampX(hud.getHudX(), width, hud.isHudCenterAnchored());
-            int configY = hud.getHudY();
-            int column = x / COLUMN_WIDTH;
-            int previousBottom = columnBottoms.getOrDefault(column, 0);
-            int startY = HudBounds.clampY(Math.max(configY, previousBottom), height);
-            columnBottoms.put(column, startY + height + GAP);
-            resolvedY.put(hud.getHudKey(), startY);
+        for(DraggableHud hud:auxiliary)if(hud.isHudVisible()){
+            measured.put(hud.getHudKey(),measure(hud));
         }
+        arrange();
+    }
+    private static com.nezurstandalone.control.HudListLayout.Box measure(DraggableHud hud){
+        boolean visible=hud.isHudVisible();
+        if(!visible){
+            int x=HudBounds.clampX(hud.getHudX(),1,hud.isHudCenterAnchored())+(hud.isHudCenterAnchored()?ScreenScale.width()/2:0);
+            return new com.nezurstandalone.control.HudListLayout.Box(hud.getHudKey(),x,hud.getHudY(),1,0,hud.isStackedList(),false);
+        }
+        int width=Math.max(Math.max(1,hud.getHudWidth()),hud.getHudEditorWidth())+1,height=visible?Math.max(1,hud.getHudHeight())+1:0;
+        // Normalize center-relative left edges into the same screen space as every other HUD.
+        int x=hud.getRenderX()+(hud.isHudCenterAnchored()?ScreenScale.width()/2:0);
+        return new com.nezurstandalone.control.HudListLayout.Box(hud.getHudKey(),x,hud.getHudY(),width,height,hud.isStackedList(),visible);
+    }
+    private static void arrange(){
+        resolvedY.clear();
+        resolvedY.putAll(com.nezurstandalone.control.HudListLayout.arrange(new java.util.ArrayList<>(measured.values()),ScreenScale.height()));
+    }
+    private static boolean update(DraggableHud hud){
+        com.nezurstandalone.control.HudListLayout.Box now=measure(hud),before=measured.get(hud.getHudKey());
+        if(before==null||before.x!=now.x||before.y!=now.y||before.width!=now.width||before.height!=now.height||before.visible!=now.visible){
+            measured.put(hud.getHudKey(),now);return true;
+        }
+        return false;
     }
 
     public static int getStackedY(String hudKey, int configY) {
@@ -93,6 +93,23 @@ public class HudStackManager {
     }
 
     public static int getStackedY(DraggableHud hud) {
-        return getStackedY(hud.getHudKey(), hud.getHudY());
+        if (Minecraft.getMinecraft().currentScreen instanceof HudEditorScreen)
+            return HudBounds.clampY(hud.getHudY(), Math.max(1,hud.getHudHeight()));
+        // Content can change during render (target animations, counters and music).
+        // Re-measure before resolving rather than using last frame's rectangle.
+        if (Nezur.moduleManager != null) {
+            if(dirty)rebuild();
+            boolean changed=false;
+            // Also check predecessors: a widget can be drawn before its newly resized neighbor.
+            for(Module module:hudModules){
+                if(module.isToggled())changed|=update((DraggableHud)module);
+                else changed|=measured.remove(((DraggableHud)module).getHudKey())!=null;
+            }
+            for(DraggableHud extra:auxiliary)changed|=update(extra);
+            if(!measured.containsKey(hud.getHudKey())&&!(hud instanceof Module))changed|=update(hud);
+            if(changed)arrange();
+        }
+        return resolvedY.getOrDefault(hud.getHudKey(),
+                HudBounds.clampY(hud.getHudY(), Math.max(1,hud.getHudHeight())));
     }
 }

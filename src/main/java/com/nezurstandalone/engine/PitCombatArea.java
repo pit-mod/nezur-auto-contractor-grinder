@@ -8,7 +8,7 @@ public final class PitCombatArea {
         if(!Double.isFinite(x)||!Double.isFinite(y)||!Double.isFinite(z))return false;
         if("GENESIS".equals(map))return x*x+z*z<=55*55;
         if("CASTLE".equals(map))return x*x+z*z<=40*40;
-        if("CORALS".equals(map))return x*x+z*z<=39*39;
+        if("CORALS".equals(map)||"ABYSS".equals(map))return x*x+z*z<=39*39;
         if("ELEMENTS".equals(map))return y>=79&&y<=111&&rectangle(x,z,-12,13,-13,14);
         if("FOUR_SEASONS".equals(map))return y>=78&&y<=111&&rectangle(x,z,-12,13,-12,13);
         return false;

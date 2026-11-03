@@ -61,6 +61,9 @@ public final class LoadoutPlanner {
     private boolean theWay, suspended;
     private double gold=Double.NaN, spendCeiling=Double.NaN;
     private boolean awaitingDebit;
+    private boolean debitConfirmed;
+    private long walletRevision, reservedWalletRevision;
+    private double lastObservedWallet=Double.NaN;
     private boolean rejectedGold;
     private double rejectedBalance=Double.NaN;
     private long goldAt=-1, revision, evidenceRevision, pendingRevision;
@@ -93,6 +96,8 @@ public final class LoadoutPlanner {
         for(Slot s:slots){s.equipmentKnown=s.present=s.unlocked=s.verified=false;s.equipped=null;s.liveRequired=0;s.retryAt=0;s.failures=0;s.logged="";}
         canClear.clear();pending=null;pendingDesired=null;pendingCost=0;confirmationOpen=confirmationSeen=pendingMayHaveSpent=false;awaitingDebit=false;spendCeiling=Double.NaN;
         choiceOwnedAfterDispatch=choiceSelectedAfterDispatch=false;
+        debitConfirmed=false;
+        lastObservedWallet=Double.NaN;
         rejectedGold=false;rejectedBalance=Double.NaN;invalidateGold();changed();
     }
     public void configure(Kind k,int number,String desired,boolean enabled) {
@@ -119,7 +124,8 @@ public final class LoadoutPlanner {
         rejectedGold=false;rejectedBalance=Double.NaN;
         // A changed server wallet reconciles our conservative debit; unrelated packets cannot.
         if(Double.compare(gold,amount)!=0){
-            if(!awaitingDebit || amount<=spendCeiling){spendCeiling=Double.NaN;awaitingDebit=false;}
+            if(Double.compare(lastObservedWallet,amount)!=0){walletRevision++;lastObservedWallet=amount;}
+            if(!awaitingDebit || amount<=spendCeiling || debitConfirmed&&walletRevision>reservedWalletRevision){spendCeiling=Double.NaN;awaitingDebit=false;debitConfirmed=false;}
             gold=amount;changed();
         }
         boolean wasStale=goldAt<0||now-goldAt>GOLD_AGE_MS;
@@ -168,6 +174,7 @@ public final class LoadoutPlanner {
         s.liveRequired=requiredLevel(lore);s.unlocked=!(s.equipped.equals(NONE)&&has(lore,"required level"));s.lockObservedLevel=level;
         Entry e=entry(k,s.equipped);if(e!=null){e.ownership=Ownership.OWNED;e.uncertainPurchase=false;/* Free reselection still requires chooser evidence. */}
         if(pending==s&&s.unlocked&&s.equipped.equalsIgnoreCase(pendingDesired)&&evidenceRevision>pendingRevision) {
+            confirmDebit();
             s.verified=true;s.failures=0;s.retryAt=0;
             if(e!=null){e.ownership=Ownership.OWNED;e.restriction=null;}
             logger.accept(tag(s)+pendingDesired+" successfully equipped and verified.");
@@ -184,6 +191,7 @@ public final class LoadoutPlanner {
             choiceSelectedAfterDispatch=has(lore,"already selected");
             choiceOwnedAfterDispatch=normalize(name).equals(NONE)?choiceSelectedAfterDispatch:
                     e!=null&&e.ownership==Ownership.OWNED&&e.restriction==null&&(e.freeSelect||choiceSelectedAfterDispatch);
+            if(choiceOwnedAfterDispatch)confirmDebit();
         }
     }
     /** Local lore recheck never constitutes a post-dispatch server response. */
@@ -358,7 +366,13 @@ public final class LoadoutPlanner {
         reservePending(now);changed();
     }
     private void reservePending(long now) {
-        if(pendingCost>0){spendCeiling=balance(now)-pendingCost;awaitingDebit=true;}
+        if(pendingCost>0){spendCeiling=balance(now)-pendingCost;awaitingDebit=true;debitConfirmed=false;reservedWalletRevision=walletRevision;}
+    }
+    /** A verified paid result plus a changed server wallet resolves a debit even during earnings. */
+    private void confirmDebit() {
+        if(!awaitingDebit)return;
+        debitConfirmed=true;
+        if(walletRevision>reservedWalletRevision){awaitingDebit=false;spendCeiling=Double.NaN;debitConfirmed=false;}
     }
     public void applied(long now) {
         if(pending==null)throw new IllegalStateException("no operation");

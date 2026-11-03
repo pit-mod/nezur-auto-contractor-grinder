@@ -14,9 +14,9 @@ import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 @Mod(modid = Nezur.MODID, version = Nezur.VERSION, name = Nezur.NAME)
 public class Nezur {
     public static final String MODID = "nezur_acg";
-    public static final String VERSION = "1.5.4";
+    public static final String VERSION = "1.5.5";
     public static final String NAME = "Nezur Auto Contractor + Grinder";
-    
+
     public static ModuleManager moduleManager;
 
     @EventHandler
@@ -31,7 +31,7 @@ public class Nezur {
         MinecraftForge.EVENT_BUS.register(new com.nezurstandalone.utils.HudStackManager());
         MinecraftForge.EVENT_BUS.register(new com.nezurstandalone.utils.HudDragHandler());
         MinecraftForge.EVENT_BUS.register(new com.nezurstandalone.utils.ConfigLifecycleHandler());
-        
+
         MinecraftForge.EVENT_BUS.register(new com.nezurstandalone.utils.ConfigSaveDebouncer());
         MinecraftForge.EVENT_BUS.register(new com.nezurstandalone.utils.HudPositionSaveDebouncer());
         MinecraftForge.EVENT_BUS.register(new com.nezurstandalone.utils.GuiDumper());
@@ -45,8 +45,8 @@ public class Nezur {
             com.nezurstandalone.utils.ConfigSaveDebouncer.flushNow();
             com.nezurstandalone.utils.HudPositionSaveDebouncer.flushNow();
         }));
-        
-        
+
+
         System.out.println("Nezur Mod Initialized!");
     }
 

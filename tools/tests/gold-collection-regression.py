@@ -40,7 +40,7 @@ public class GoldRegression {
  Connection connection=new Connection();ContractStuckWatch stuckWatch=new ContractStuckWatch();Flag goldLobbySwap=new Flag(false);NumberSetting goldRescan=new NumberSetting("rescan",750,250,3000,0),minimumGold=new NumberSetting("min",2,1,20,0),lowGoldTimeout=new NumberSetting("timeout",45,10,180,0);
  GOLD_SETTING
  EntityItem goldTarget;int lastGoldProgress=-1;GoldPickupRecovery goldPickupRecovery=new GoldPickupRecovery();Map<Integer,Long> blockedGoldTargets=new HashMap<>();
- void log(String s){}void startGrinder(){}void stopGrinder(){}void cleanupNavigation(){}void move(State s){state=s;}boolean isExecutable(ContractOffer.Type t){return true;}AutoGrinder grinder(){return null;}boolean isClassicPitTitle(String s){return false;}int getMidPlayerCount(){return 0;}
+ void log(String s){}void startGrinder(){}void stopGrinder(){}void cleanupNavigation(){}void move(State s){state=s;}boolean isExecutable(ContractOffer.Type t){return true;}AutoGrinder grinder(){return null;}boolean isClassicPitTitle(String s){return false;}boolean sustainedLowPopulation(){return getMidPlayerCount()<(int)minMidPlayers.value;}int getMidPlayerCount(){return 0;}
  LIVE_GOLD
  TICK_GOLD
  LOBBY_SWAP

@@ -1,119 +1,103 @@
 package com.nezurstandalone.utils;
 
+import com.nezurstandalone.utils.map.MapLocation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.init.Blocks;
 import net.minecraft.util.BlockPos;
 import net.minecraft.block.Block;
 
-public class PitMapManager {
-    public enum PitMap {
-        GENESIS, CORALS, CASTLE, ELEMENTS, FOUR_SEASONS, UNKNOWN
-    }
-
-    private static PitMap cachedMap = PitMap.UNKNOWN;
-    private static boolean hasChecked = false;
+/** Roni map/region definitions behind Nezur's existing integration API. */
+public final class PitMapManager {
+    public enum PitMap { GENESIS, ABYSS, CASTLE, ELEMENTS, FOUR_SEASONS, CUSTOM, UNKNOWN, CORALS }
+    private static PitMap cachedMap=PitMap.UNKNOWN;
     private static Object cachedWorld;
-    private static long startedAt=Long.MIN_VALUE;
     private static int checkedTick=Integer.MIN_VALUE;
-    private static final BlockPos GENESIS_MARKER=new BlockPos(14,85,-13),CASTLE_MARKER=new BlockPos(18,95,-9),
-            ELEMENTS_MARKER=new BlockPos(-7,113,-10),SEASONS_MARKER=new BlockPos(-87,85,-51),CORALS_MARKER=new BlockPos(-2,113,11);
+    private static int customSpawnY=98,customMidY=67,customMidX,customMidZ;
+    private static final BlockPos CENTER=new BlockPos(-13,115,0),SEASONS_TABLE=new BlockPos(-14,115,0),
+        ELEMENTS_CHEST=new BlockPos(-13,114,7),ABYSS_CHEST=new BlockPos(-12,114,6),
+        CASTLE_TABLE=new BlockPos(-14,96,0),GENESIS_TABLE=new BlockPos(-17,87,0);
 
-    public static void detectMap() {
-        Minecraft mc = Minecraft.getMinecraft();
+    public static void detectMap(){
+        Minecraft mc=Minecraft.getMinecraft();
         if(cachedWorld!=mc.theWorld){reset();cachedWorld=mc.theWorld;}
-        if(hasChecked)return;
-        if (mc.theWorld == null) {
-            cachedMap = PitMap.UNKNOWN;
-            hasChecked = false;
-            return;
-        }
-        if(mc.thePlayer==null)return;
-        long now=com.nezurstandalone.control.Clock.millis();
-        if(startedAt==Long.MIN_VALUE)startedAt=now;
-        if(now-startedAt>=5000L){hasChecked=true;return;}
+        if(mc.theWorld==null||mc.thePlayer==null||cachedMap!=PitMap.UNKNOWN)return;
         if(checkedTick==mc.thePlayer.ticksExisted)return;
         checkedTick=mc.thePlayer.ticksExisted;
-
-        Block genesisCheck = marker(mc,GENESIS_MARKER);
-        if (genesisCheck == Blocks.nether_brick) {
-            cachedMap = PitMap.GENESIS;
-            hasChecked = true;
-            return;
-        }
-
-        BlockPos castlePos = CASTLE_MARKER;
-        Block castleCheck = marker(mc,castlePos);
-        if (castleCheck == Blocks.double_stone_slab) {
-            int meta = castleCheck.getMetaFromState(mc.theWorld.getBlockState(castlePos));
-            if (meta == 8) {
-                cachedMap = PitMap.CASTLE;
-                hasChecked = true;
-                return;
-            }
-        }
-
-        Block elementsCheck = marker(mc,ELEMENTS_MARKER);
-        if (elementsCheck == Blocks.sandstone) {
-            cachedMap = PitMap.ELEMENTS;
-            hasChecked = true;
-            return;
-        }
-
-        Block seasonsCheck = marker(mc,SEASONS_MARKER);
-        if (seasonsCheck == Blocks.planks) {
-            int seasonsMeta = seasonsCheck.getMetaFromState(mc.theWorld.getBlockState(SEASONS_MARKER));
-            if (seasonsMeta == 2) {
-                cachedMap = PitMap.FOUR_SEASONS;
-                hasChecked = true;
-                return;
-            }
-        }
-
-        Block coralsCheck = marker(mc,CORALS_MARKER);
-        if (coralsCheck == Blocks.sand) {
-            cachedMap = PitMap.CORALS;
-            hasChecked = true;
-            return;
-        }
-
-        cachedMap = PitMap.UNKNOWN;
+        // Original Roni marker positions and priority; never force an unloaded chunk read.
+        Block center=marker(mc,CENTER);
+        if(center==Blocks.enchanting_table&&marker(mc,ELEMENTS_CHEST)==Blocks.ender_chest)cachedMap=PitMap.ELEMENTS;
+        else if(marker(mc,SEASONS_TABLE)==Blocks.enchanting_table)cachedMap=PitMap.FOUR_SEASONS;
+        else if(center==Blocks.enchanting_table&&marker(mc,ABYSS_CHEST)==Blocks.ender_chest)cachedMap=PitMap.ABYSS;
+        else if(marker(mc,CASTLE_TABLE)==Blocks.enchanting_table)cachedMap=PitMap.CASTLE;
+        else if(marker(mc,GENESIS_TABLE)==Blocks.enchanting_table)cachedMap=PitMap.GENESIS;
+        else cachedMap=legacyMap(mc);
     }
-
-    private static Block marker(Minecraft mc,BlockPos pos) {
-        return mc.theWorld.isBlockLoaded(pos)?mc.theWorld.getBlockState(pos).getBlock():null;
+    /** Legacy Nezur markers remain useful when a server revision moves the Roni furniture. */
+    private static PitMap legacyMap(Minecraft mc){
+        if(marker(mc,new BlockPos(14,85,-13))==Blocks.nether_brick)return PitMap.GENESIS;
+        if(markerMeta(mc,new BlockPos(18,95,-9),Blocks.double_stone_slab,8))return PitMap.CASTLE;
+        if(marker(mc,new BlockPos(-7,113,-10))==Blocks.sandstone)return PitMap.ELEMENTS;
+        if(markerMeta(mc,new BlockPos(-87,85,-51),Blocks.planks,2))return PitMap.FOUR_SEASONS;
+        if(marker(mc,new BlockPos(-2,113,11))==Blocks.sand)return PitMap.ABYSS;
+        return PitMap.UNKNOWN;
     }
-
-    public static PitMap getCurrentMap() {
-        detectMap();
-        return cachedMap;
+    private static boolean markerMeta(Minecraft mc,BlockPos pos,Block block,int meta){
+        return marker(mc,pos)==block&&block.getMetaFromState(mc.theWorld.getBlockState(pos))==meta;
     }
-
-    public static void reset() {
-        cachedMap = PitMap.UNKNOWN;
-        hasChecked = false;
-        startedAt=Long.MIN_VALUE;
-        checkedTick=Integer.MIN_VALUE;
-    }
-
-    public static boolean isInSpawn(double x, double y, double z) {
-        if (getCurrentMap() == PitMap.FOUR_SEASONS) {
-            return isInBox(x, y, z, 50, -50, 111, 138, -50, 50);
-        } else if (getCurrentMap() == PitMap.GENESIS) {
-            return isInBox(x, y, z, -50, 50, 85, 108, -50, 50);
-        } else if (getCurrentMap() == PitMap.ELEMENTS) {
-            return isInBox(x, y, z, -50, 50, 111, 122, -50, 50);
-        } else if (getCurrentMap() == PitMap.CASTLE) {
-            return isInBox(x, y, z, -22, 25, 90, 115, -24, 23);
-        } else if (getCurrentMap() == PitMap.CORALS) {
-            return isInBox(x, y, z, -18, 18, 114, 123, -21, 20);
+    private static Block marker(Minecraft mc,BlockPos pos){return mc.theWorld.isBlockLoaded(pos)?mc.theWorld.getBlockState(pos).getBlock():null;}
+    public static PitMap getCurrentMap(){detectMap();return cachedMap;}
+    public static void reset(){cachedMap=PitMap.UNKNOWN;checkedTick=Integer.MIN_VALUE;}
+    public static void setPitMap(PitMap map){cachedWorld=Minecraft.getMinecraft().theWorld;cachedMap=map==PitMap.CORALS?PitMap.ABYSS:map;checkedTick=Integer.MIN_VALUE;}
+    public static void setCustomCoords(int spawnY,int midY,int midX,int midZ){customSpawnY=spawnY;customMidY=midY;customMidX=midX;customMidZ=midZ;}
+    public static int getSpawnY(){
+        switch(getCurrentMap()){
+            case CASTLE:return 95;case GENESIS:return 86;
+            case ABYSS:case CORALS:case ELEMENTS:case FOUR_SEASONS:return 114;
+            case CUSTOM:return customSpawnY;default:return 0;
         }
-        return false;
     }
+    public static int getMidY(){
+        switch(getCurrentMap()){
+            case CASTLE:return 71;case GENESIS:return 43;
+            case ABYSS:case CORALS:case ELEMENTS:case FOUR_SEASONS:return 82;
+            case CUSTOM:return customMidY;default:return 0;
+        }
+    }
+    public static int getMidCenterX(){return getCurrentMap()==PitMap.CUSTOM?customMidX:0;}
+    public static int getMidCenterZ(){return getCurrentMap()==PitMap.CUSTOM?customMidZ:0;}
+    public static BlockPos getMidCenter(){return new BlockPos(getMidCenterX(),getMidY(),getMidCenterZ());}
+    /** All callers share the same ordered Roni regions, including the roof and faction spawns. */
+    public static boolean isInSpawn(double x,double y,double z){
+        String zone=getZone(x,y,z);
+        return isMainSpawnZone(zone)||zone.equals("Angel")||zone.equals("Demon");
+    }
+    public static boolean isInMainSpawn(double x,double y,double z){return isMainSpawnZone(getZone(x,y,z));}
+    private static boolean isMainSpawnZone(String zone){return zone.equals("Spawn")||zone.equals("Overspawn");}
 
-    public static boolean isInSewer(double x, double y, double z) {
-        return getZone(x, y, z).equals("Sewer");
+    /** Locate a walkable mid floor near this map's actual height, never under the spawn platform. */
+    public static BlockPos findMidLanding(double x,double z){
+        Minecraft mc=Minecraft.getMinecraft();
+        if(getCurrentMap()==PitMap.UNKNOWN||mc.theWorld==null||!Double.isFinite(x)||!Double.isFinite(z))return null;
+        int top=Math.min(253,Math.min(getMidY()+8,getSpawnY()-4));
+        int bottom=Math.max(1,getMidY()-12);
+        for(int y=top;y>=bottom;y--){
+            BlockPos floor=new BlockPos(x,y,z);
+            if(!mc.theWorld.isBlockLoaded(floor)||!mc.theWorld.isBlockLoaded(floor.up(2)))return null;
+            if(mc.theWorld.getBlockState(floor).getBlock().getMaterial().isSolid()
+                    &&mc.theWorld.isAirBlock(floor.up())&&mc.theWorld.isAirBlock(floor.up(2)))return floor.up();
+        }
+        return null;
     }
-    
+    public static boolean isInSpawnRegion(double x,double y,double z,int baseY,int radius){
+        PitMap map=getCurrentMap();
+        if(map==PitMap.UNKNOWN||!Double.isFinite(x)||!Double.isFinite(y)||!Double.isFinite(z))return false;
+        if(map==PitMap.GENESIS&&(isInBox(x,y,z,60,82,62,80,-82,-58)||isInBox(x,y,z,-82,-60,62,75,60,82)))return true;
+        if(map==PitMap.CUSTOM)return (int)y>getSpawnY()-2&&(int)y<getSpawnY()+12;
+        return x>=-radius&&x<=radius&&z>=-radius&&z<=radius&&y>baseY-2&&y<baseY+12;
+    }
+    public static MapLocation getLocation(double x,double y,double z){return MapLocation.at(getCurrentMap(),x,y,z);}
+    public static boolean isInSewer(double x,double y,double z){return getLocation(x,y,z)==MapLocation.CASTLE_SEWERS;}
+
     /**
      * The sewer chest that can only be reached by the jump across the gap, and how far from
      * that point a chest still counts as being that chest.
@@ -155,13 +139,13 @@ public class PitMapManager {
      */
     private static final BlockPos REDIRECT_CHEST_1_APPROX = new BlockPos(105, 60, 13);
     private static final BlockPos REDIRECT_CHEST_1_TARGET = new BlockPos(103, 58, 13);
-    
+
     private static final BlockPos REDIRECT_CHEST_2_APPROX = new BlockPos(99, 63, 46);
     private static final BlockPos REDIRECT_CHEST_2_TARGET = new BlockPos(99, 58, 47);
-    
+
     private static final double REDIRECT_CHEST_RADIUS = 5.0;
 
-    /** 
+    /**
      * Returns the target block the bot should walk to if the given coordinates belong to a redirect chest.
      * Returns null if it is not a redirect chest.
      */
@@ -169,21 +153,21 @@ public class PitMapManager {
         if (getCurrentMap() != PitMap.CASTLE) {
             return null;
         }
-        
+
         double dx = x - REDIRECT_CHEST_1_APPROX.getX();
         double dy = y - REDIRECT_CHEST_1_APPROX.getY();
         double dz = z - REDIRECT_CHEST_1_APPROX.getZ();
         if (dx * dx + dy * dy + dz * dz <= REDIRECT_CHEST_RADIUS * REDIRECT_CHEST_RADIUS) {
             return REDIRECT_CHEST_1_TARGET;
         }
-        
+
         dx = x - REDIRECT_CHEST_2_APPROX.getX();
         dy = y - REDIRECT_CHEST_2_APPROX.getY();
         dz = z - REDIRECT_CHEST_2_APPROX.getZ();
         if (dx * dx + dy * dy + dz * dz <= REDIRECT_CHEST_RADIUS * REDIRECT_CHEST_RADIUS) {
             return REDIRECT_CHEST_2_TARGET;
         }
-        
+
         return null;
     }
 
@@ -206,124 +190,20 @@ public class PitMapManager {
         return x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ;
     }
 
-    public static String getZone(double x, double y, double z) {
-        PitMap map = getCurrentMap();
-
-        if (map == PitMap.FOUR_SEASONS) {
-            if (isInBox(x, y, z, 18, -16, 111, 138, -20, 17)) {
-                return "Spawn";
-            }
-            if (isInBox(x, y, z, -104, 102, 172, 500, -99, 110)) {
-                return "Overspawn";
-            }
-            if (isInBox(x, y, z, -12, 13, 78, 111, -12, 13)) {
-                return "Pit";
-            }
-            if (z > 0) {
-                return (x >= 0) ? "Winter" : "Spring";
-            } else {
-                return (x >= 0) ? "Autumn" : "Summer";
-            }
+    public static String getZone(double x,double y,double z){
+        if(getCurrentMap()==PitMap.CUSTOM){
+            if(!Double.isFinite(x)||!Double.isFinite(y)||!Double.isFinite(z))return "Unknown";
+            int by=(int)Math.floor(y);
+            if(by>customSpawnY-2&&by<customSpawnY+12)return "Spawn";
+            if(by>=customSpawnY+12)return "Overspawn";
+            return Math.abs(x-customMidX)<=20&&Math.abs(z-customMidZ)<=20?"Pit":"Outskirts";
         }
-
-        if (map == PitMap.GENESIS) {
-            if (isInBox(x, y, z, -30, 22, 85, 108, -34, 20)) {
-                return "Spawn";
-            }
-            if (isInBox(x, y, z, -78, -61, 64, 70, 62, 78)) {
-                return "Angel";
-            }
-            if (isInBox(x, y, z, 57, 81, 64, 81, -56, -81)) {
-                return "Demon";
-            }
-            if (isInBox(x, y, z, -93, 106, 126, 500, -90, 88)) {
-                return "Overspawn";
-            }
-            double distSqCenter = x * x + z * z;
-            if (distSqCenter > 35 * 35) {
-                if (z > 0) {
-                    return (x > 0) ? "Garden" : "Palace";
-                } else {
-                    return (x > 0) ? "Fortress" : "Badlands";
-                }
-            }
-            return "Pit";
-        }
-
-        if (map == PitMap.ELEMENTS) {
-            if (isInBox(x, y, z, -16, 20, 111, 122, -16, 23)) {
-                return "Spawn";
-            }
-            if (isInBox(x, y, z, -98, 105, 145, 500, -96, 99)) {
-                return "Overspawn";
-            }
-            if (isInBox(x, y, z, -12, 13, 79, 111, -13, 14)) {
-                return "Pit";
-            }
-            if (z > 0) {
-                return (x >= 0) ? "Lava" : "Sky";
-            } else {
-                return (x >= 0) ? "Mountains" : "Water";
-            }
-        }
-
-        if (map == PitMap.CASTLE) {
-            // #1 Spawn
-            if (isInBox(x, y, z, -22, 25, 90, 115, -24, 23)) {
-                return "Spawn";
-            }
-            // #2 Sewer
-            if (isInBox(x, y, z, -10, 131, 44, 62, 9, 87)) {
-                return "Sewer";
-            }
-            // #3 Region (Distance Filter)
-            if (getDistSq(x, z, 0, 0) > 20 * 20) {
-                if (z > 0) {
-                    return (x >= 0) ? "City" : "Port";
-                } else {
-                    return (x >= 0) ? "Farm" : "Forest";
-                }
-            }
-            // #4 OverSpawn
-            if (y >= 124) {
-                return "Overspawn";
-            }
-            // #5 Pit
-            return "Pit";
-        }
-
-        if (map == PitMap.CORALS) {
-            // #1 Spawn
-            if (isInBox(x, y, z, -18, 18, 114, 123, -21, 20)) {
-                return "Spawn";
-            }
-            // #2 Region
-            if (getDistSq(x, z, 0, 0) > 19 * 19) {
-                if (z > 0) {
-                    return (x >= 0) ? "Geyser" : "Shipwreck";
-                } else {
-                    return (x >= 0) ? "Temple" : "Seaweed";
-                }
-            }
-            // #3 Overspawn
-            if (isInBox(x, y, z, -98, 91, 145, 500, -119, 124)) {
-                return "Overspawn";
-            }
-            // #4 Pit
-            return "Pit";
-        }
-
-        return "???";
+        MapLocation location=getLocation(x,y,z);
+        return location==null?"Unknown":location.getZoneName();
     }
-
-    /** Combat roaming only: do not relabel spawn, sewer or server contract regions. */
-    public static boolean isInCombatArea(double x,double y,double z) {
+    public static boolean isInCombatArea(double x,double y,double z){
         String zone=getZone(x,y,z);
-        if(zone.equals("Spawn")||zone.equals("Overspawn")||zone.equals("Sewer"))return false;
-        return zone.equals("Pit") || com.nezurstandalone.engine.PitCombatArea.contains(getCurrentMap().name(),x,y,z);
-    }
-
-    private static double getDistSq(double x, double z, double tx, double tz) {
-        return (x - tx) * (x - tx) + (z - tz) * (z - tz);
+        if(isInSpawn(x,y,z)||zone.equals("Spawn")||zone.equals("Overspawn")||zone.equals("Sewer")||zone.equals("Angel")||zone.equals("Demon"))return false;
+        return zone.equals("Pit")||com.nezurstandalone.engine.PitCombatArea.contains(getCurrentMap().name(),x,y,z);
     }
 }

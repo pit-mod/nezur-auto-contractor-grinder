@@ -42,6 +42,11 @@ import java.util.Random;
 public final class AutoContractor extends Module implements com.nezurstandalone.module.DraggableHud {
     private final com.nezurstandalone.combat.CombatOptions combatOptions=new com.nezurstandalone.combat.CombatOptions();
     private static AutoContractor instance;
+    /** Normal loadout automation is suppressed throughout Contractor ownership, including idle/preparation. */
+    public static boolean controlsGrinder(Object engine){
+        AutoContractor c=instance;return c!=null&&c.isToggled()&&c.grinder()==engine;
+    }
+
     private long actionSession;
     private final com.nezurstandalone.utils.MenuTransition menuAction=new com.nezurstandalone.utils.MenuTransition();
     private long menuRevision,clickRevision;
@@ -66,7 +71,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         if(c==null || !c.isToggled() || c.mc.thePlayer==null || c.actionSession!=com.nezurstandalone.control.ClientSession.current())return;
         if(c.mc.thePlayer.openContainer.windowId==window){
             c.menuRevision++;
-            if(c.classicMenuAction)c.menuAction.serverContents(c.mc.thePlayer.openContainer);
+            c.menuAction.serverContents(c.mc.thePlayer.openContainer);
         }
         if(c.purchaseName!=null && (window==0 || window==-2 || window==c.mc.thePlayer.openContainer.windowId))
             c.purchaseConfirmed=c.purchaseEvidence(c.purchaseName)>c.purchaseBefore
@@ -82,7 +87,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
 
     private final BooleanSetting goldenApples=new BooleanSetting("Golden Apples",true);
     private final NumberSetting gappleWaitDistance=new NumberSetting("Gapple Pad Wait Distance",8,7,12,1),
-            gappleOofCooldown=new NumberSetting("Gapple Oof Cooldown ms",12000,12000,60000,0),
+            gappleOofCooldown=new NumberSetting("Gapple Oof Cooldown ms",9000,9000,60000,0),
             gappleMaxDeaths=new NumberSetting("Gapple Natural Death Limit",8,4,20,0);
     private boolean gappleActive,gappleDeathSeen,gapplePendingOof,gapplePreAccept;
     private int gappleEatingSlot=-1;
@@ -100,6 +105,9 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private long gappleStepAt,gappleRespawnAt,gappleLaunchAt,gappleLastOof,gappleOofSentAt;
     private int gappleDeaths,gappleRetries,gappleEatCount,gappleLastProgress=-1;
     private net.minecraft.util.BlockPos gapplePad,gappleWait;
+    private final com.nezurstandalone.settings.ModeSetting unsupportedContracts=new com.nezurstandalone.settings.ModeSetting("Unsupported Contracts","Wait at Spawn","Wait at Spawn","Keep Grinding");
+    private final com.nezurstandalone.contract.ContractDailyCount dailyContracts=new com.nezurstandalone.contract.ContractDailyCount();
+    private boolean npcHandLeased;
     private final BooleanSetting autoNext=new BooleanSetting("Auto Next Contract",true);
     private final BooleanSetting autoDailyQuests=new BooleanSetting("Auto Start Daily Quests",false);
     private final BooleanSetting autoWeeklyQuests=new BooleanSetting("Auto Start Weekly Quests",false);
@@ -152,6 +160,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private final StableOfferGate offerGate=new StableOfferGate();
     private final Object interactionOwner=new Object();
     private final String rotationOwner="contractor.npc";
+    private final PerkSetting hudStyle=new PerkSetting("HUD Style","Dashboard","Dashboard","Compact","Detailed");
     private final PerkSetting hudDetail=new PerkSetting("HUD Detail","Compact","Compact","Detailed");
     private final NumberSetting hudScale=new NumberSetting("HUD Scale",1,.6,1.5,2);
     private com.nezurstandalone.gui.GrinderDashboard.Snapshot hudSnapshot;
@@ -209,7 +218,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         addSettings(combatOptions.settings());
         markDangerous();
         equipmentMode.cycleOnLeftClick = true;
-        addSettings(autoNext,autoDailyQuests,autoWeeklyQuests,debug,actionDiagnostics,showInfoHud,hudDetail,hudScale,aimSpeed,retries,waitRadius,pollMs,menuDelay,clickDelay,
+        addSettings(autoNext,unsupportedContracts,autoDailyQuests,autoWeeklyQuests,debug,actionDiagnostics,showInfoHud,hudStyle,hudDetail,hudScale,aimSpeed,retries,waitRadius,pollMs,menuDelay,clickDelay,
                 goldenApples,killPlayers,chainKills,killStreak,sneakKills,noArmorKills,noPerkKills,bountyKills,goldIngots,
                 fistMid,diamondSword,equipmentMode,rebuyAfterDeath,buyDiamondSword,
                 gappleWaitDistance,gappleOofCooldown,gappleMaxDeaths,sneakRadius,sneakDelay,goldScanRadius,goldRescan,minimumGold,lowGoldTimeout,goldLobbySwap,
@@ -240,9 +249,10 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             i.type=pretty(scoreboard.type.name());i.task=selected!=null?selected.task:scoreboard.objective;}
         else if(selected!=null)i.choice=selected.task;
         if(selected!=null)i.vile=selected.vileAmount;
+        i.remaining=dailyContracts.remaining();i.remainingEstimated=dailyContracts.estimated();
         i.completed=hudCompleted;i.retries=attempts;i.maxRetries=(int)retries.value;
-        i.detailed=hudDetail.getMode().equals("Detailed");i.paused=contractTracker.timerPaused();
-        i.menu=observedMenu;i.rejected=rejectedContractorNpcs.size();i.equipment=equipmentMode.getMode();
+        i.detailed=hudDetail.getMode().equals("Detailed")||hudStyle.getMode().equals("Detailed");i.paused=contractTracker.timerPaused();
+        i.menu=i.active?"":observedMenu;i.rejected=rejectedContractorNpcs.size();i.equipment=equipmentMode.getMode();
         if(state==State.WAITING_FOR_MAJOR_EVENT)i.event=waitingMajorEvent;
         if(state==State.NO_VILE_OFFERS)i.retrySeconds=Math.max(0,(noOfferRetryAt-now+999)/1000);
         if(nextAction>now && nextAction!=Long.MAX_VALUE)i.actionSeconds=(nextAction-now+999)/1000;
@@ -258,6 +268,47 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         i.perkLease=g!=null && g.hasTemporaryPerkLease();
         if(i.perkLease)i.perk=i.restoring?"Restoring original loadout":g.isTemporaryNoPerkReady()?"No perks ready"
                 :g.isTemporaryKungFuReady()?"Kung Fu ready":"Preparing contract loadout";
+        ContractOffer.Type context=i.active?scoreboard.type:selected!=null?selected.type:
+                gappleActive?ContractOffer.Type.GOLDEN_APPLES:ContractOffer.Type.UNKNOWN;
+        i.contextTitle=pretty(context.name());
+        if(state==State.FALLBACK_REFRESH_MODE)i.detail("Unsupported",unsupportedContracts.getMode());
+        if(mc.thePlayer!=null){
+            switch(context){
+                case GOLDEN_APPLES:
+                    i.contextTitle="Golden Apple cycle";
+                    i.detail("Contract",gapplePreAccept?"Not accepted":i.active?"Active":"Preparing");
+                    i.detail("Apples ready",String.valueOf(goldenAppleCount()));
+                    i.detail("Perks",g!=null&&g.gapplePerksReady()?"Ready":"Checking loadout");
+                    i.detail("Natural deaths",gappleDeaths+" / "+(int)gappleMaxDeaths.value);
+                    long remaining=gappleLastOof==0?0:Math.max(0,(long)gappleOofCooldown.value-(now-gappleLastOof));
+                    i.detail("After /oof",remaining==0?"Ready":String.format(java.util.Locale.ROOT,"%.1fs",remaining/1000.0));
+                    i.detail("Slimepad",gapplePad==null?"Searching":"Located");
+                    i.detail("Cycle step",pretty(state.name().replace("GAPPLE_","")));
+                    break;
+                case COLLECT_GOLD_INGOTS:
+                    i.contextTitle="Gold collection";
+                    i.detail("Drops nearby",String.valueOf(hudGoldVisible));
+                    i.detail("Pickup target",goldTarget!=null&&!goldTarget.isDead?String.format(java.util.Locale.ROOT,"%.1f m",mc.thePlayer.getDistanceToEntity(goldTarget)):"Scanning");
+                    i.detail("Scan radius",(int)goldScanRadius.value+" m");
+                    i.detail("Low density",lowGoldSince==0?"No":Math.max(0,(now-lowGoldSince)/1000)+"s");
+                    i.detail("Progress source","Server scoreboard");break;
+                case NO_ARMOR_KILLS:
+                    int armor=0;for(ItemStack part:mc.thePlayer.inventory.armorInventory)if(part!=null)armor++;
+                    i.detail("Armor equipped",armor+" / 4");i.detail("Required","No armor");break;
+                case NO_PERK_KILLS:
+                    i.detail("Perks",g!=null&&g.isTemporaryNoPerkReady()?"All removed":"Preparing");break;
+                case FIST_MID_KILLS:
+                    i.detail("Kung Fu",g!=null&&g.isTemporaryKungFuReady()?"Ready":"Not ready");
+                    i.detail("Region",com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ));break;
+                case DIAMOND_SWORD_FINAL_BLOW:
+                    i.detail("Diamond sword",hasDiamondSword()?"Available":"Missing");break;
+                case UNKNOWN:i.contextTitle="";break;
+                default:
+                    i.detail("Objective",pretty(context.name()));
+                    i.detail("Progress source","Server scoreboard");
+                    i.detail("Region",com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ));break;
+            }
+        }
         hudSnapshotState=state;hudSnapshotAt=now;
         return hudSnapshot=com.nezurstandalone.gui.ContractorDashboard.build(i);
     }
@@ -268,14 +319,14 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private float dashboardScale(com.nezurstandalone.gui.GrinderDashboard.Snapshot snapshot){
         net.minecraft.client.gui.ScaledResolution screen=com.nezurstandalone.utils.ScreenScale.get();
         return Math.max(.1f,Math.min((float)hudScale.value,Math.min((screen.getScaledWidth()-12f)
-                /com.nezurstandalone.gui.GrinderDashboard.WIDTH,(screen.getScaledHeight()-12f)/snapshot.height())));
+                /com.nezurstandalone.gui.ContractorHudRenderer.width(snapshot,hudStyle.getMode()),(screen.getScaledHeight()-12f)/com.nezurstandalone.gui.ContractorHudRenderer.height(snapshot,hudStyle.getMode()))));
     }
     private void drawDashboard(com.nezurstandalone.gui.GrinderDashboard.Snapshot snapshot,int x,int y,float alpha){
         net.minecraft.client.renderer.GlStateManager.pushMatrix();
         try{
             net.minecraft.client.renderer.GlStateManager.translate(x,y,0);
             float scale=dashboardScale(snapshot);net.minecraft.client.renderer.GlStateManager.scale(scale,scale,1);
-            com.nezurstandalone.gui.GuiDraw.resetState();com.nezurstandalone.gui.GrinderDashboard.render(snapshot,alpha);
+            com.nezurstandalone.gui.GuiDraw.resetState();com.nezurstandalone.gui.ContractorHudRenderer.render(snapshot,hudStyle.getMode(),alpha);
         }finally{com.nezurstandalone.gui.GuiDraw.resetState();net.minecraft.client.renderer.GlStateManager.popMatrix();}
     }
     public void editorPreview(int x,int y,float alpha){drawDashboard(dashboard(),x,y,alpha);}
@@ -283,18 +334,21 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     @Override public boolean isHudVisible(){return isToggled() && showInfoHud.isEnabled();}
     @Override public double getDefaultHudX(){return Math.max(0,com.nezurstandalone.utils.ScreenScale.get().getScaledWidth()-getHudWidth()-6);}
     @Override public double getDefaultHudY(){return 6;}
-    @Override public int getHudWidth(){com.nezurstandalone.gui.GrinderDashboard.Snapshot s=dashboard();return (int)Math.ceil(com.nezurstandalone.gui.GrinderDashboard.WIDTH*dashboardScale(s));}
-    @Override public int getHudHeight(){com.nezurstandalone.gui.GrinderDashboard.Snapshot s=dashboard();return (int)Math.ceil(s.height()*dashboardScale(s));}
+    @Override public int getHudEditorWidth(){return getHudWidth();}
+    @Override public int getHudWidth(){com.nezurstandalone.gui.GrinderDashboard.Snapshot s=dashboard();return (int)Math.ceil(com.nezurstandalone.gui.ContractorHudRenderer.width(s,hudStyle.getMode())*dashboardScale(s));}
+    @Override public int getHudHeight(){com.nezurstandalone.gui.GrinderDashboard.Snapshot s=dashboard();return (int)Math.ceil(com.nezurstandalone.gui.ContractorHudRenderer.height(s,hudStyle.getMode())*dashboardScale(s));}
 
     @Override protected void onEnable() {
         super.onEnable();
         actionSession=com.nezurstandalone.control.ClientSession.current();menuAction.clear();
         AutoGrinder grinder=grinder();
+        if(mc.thePlayer!=null)dailyContracts.context(mc.thePlayer.getUniqueID(),System.currentTimeMillis());
         grinderWasEnabled=grinder!=null && grinder.isToggled();
+        applyContractorProfile(grinder);
         grinderTouched=false; world=mc.theWorld;selected=null;acceptedByThisModule=false;
         rejectedContractorNpcs.clear();rejectedShopNpcs.clear();lastInteractedNpc=null;
         hudSnapshot=null;hudSessionAt=com.nezurstandalone.control.Clock.millis();hudCompleted=0;
-        completedSidebarSuppressed=false;serverStreakGoalComplete=false;
+        completedSidebarSuppressed=false;serverStreakGoalComplete=false;restoreFreshPantsAfterNoArmor=freshPantsDispatched=false;
         lastEquipmentMode=equipmentMode.getMode();equipmentPurchasePending=false;equipmentRetryAfter=0;
         attempts=0;pendingClick=false;pendingQuestClick=false;questsIssuedThisVisit.clear();purchaseName=null;
         contractStartedChat=false;
@@ -385,10 +439,12 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         if(event.phase!=TickEvent.Phase.START || !isToggled())return;
         com.nezurstandalone.control.GrinderDiagnostics.configure(this,actionDiagnostics.enabled,new java.io.File(mc.mcDataDir,"logs/nezur-acg-diagnostics"));
         if(actionSession!=com.nezurstandalone.control.ClientSession.current())resetActionSession();
+        if(!isToggled())return;
         if(mc.thePlayer!=null && mc.theWorld!=null && !com.nezurstandalone.input.NativeActionGate.automationAllowed.getAsBoolean())return;
         com.nezurstandalone.control.MovementKeys.release("contractor-approach");
         com.nezurstandalone.control.MovementKeys.release("contractor-gapple");
         long now=com.nezurstandalone.control.Clock.millis();
+        if(mc.thePlayer!=null)dailyContracts.context(mc.thePlayer.getUniqueID(),System.currentTimeMillis());
         if(com.nezurstandalone.control.AutomationSafety.manualMovement() || com.nezurstandalone.input.NativeActionGate.manual()
                 || AutoHeal.isHealing() && ownsExclusiveOperation()){
             pauseNavigation();
@@ -435,6 +491,10 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             lastEquipmentMode=equipmentMode.getMode();equipmentRetryAfter=0;
             log("Equipment selected: "+lastEquipmentMode);
         }
+        // Chunk arrival can lag behind the sidebar on join/respawn. Do not act on Unknown.
+        if(scoreboard!=null&&scoreboard.validPit&&com.nezurstandalone.utils.PitMapManager.getCurrentMap()==com.nezurstandalone.utils.PitMapManager.PitMap.UNKNOWN){
+            stopGrinder();cleanupNavigation();return;
+        }
         if(gappleActive){tickGapple(now,scoreboardPolled);return;}
         if(scoreboard==null || !scoreboard.validPit || !scoreboard.readable) {
             stopGrinder();cleanupNavigation();move(State.CHECKING_SCOREBOARD);return;
@@ -445,8 +505,9 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             if(grinder()!=null)grinder().invalidateTemporaryPerkVerification();
             purchaseName=null;selected=null;move(State.CHECKING_SCOREBOARD);return;
         }
+        resumeCompletedEquipment();
         if(!scoreboard.active && now<sidebarSettleUntil) {
-            cleanupNavigation();move(State.CHECKING_SCOREBOARD);return;
+            cleanupNavigation();if(!restoreFreshPantsAfterNoArmor)move(State.CHECKING_SCOREBOARD);return;
         }
         if(stuckRespawnUntil>0){
             if(Utils.isInSpawn() || now>=stuckRespawnUntil){stuckRespawnUntil=0;move(State.PREPARING_CONTRACT);}
@@ -572,7 +633,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                 if(scoreboard.type==ContractOffer.Type.GOLDEN_APPLES){
                     beginGapple(now);break;
                 }
-                if(scoreboard.target>0 && scoreboard.current>=scoreboard.target){move(State.CONTRACT_COMPLETE);break;}
+                if(scoreboard.target>0 && scoreboard.current>=scoreboard.target){finishContract("Contract objective already complete on server scoreboard.");break;}
                 if(scoreboard.type==ContractOffer.Type.FIST_MID_KILLS) {
                     AutoGrinder g=grinder();
                     if(g==null || g.isTemporaryKungFuUnavailable()) {
@@ -599,13 +660,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                     }
                 }
                 if(isExecutable(scoreboard.type) && needsShop()) {move(State.FINDING_SHOP);break;}
-                if(isExecutable(scoreboard.type) && prepareObjective(scoreboard.type)) {
-                    com.nezurstandalone.contract.ContractCombatPolicy.install(scoreboard.type,(long)sneakDelay.value,sneakRadius.value);
-                    if(scoreboard.type!=ContractOffer.Type.COLLECT_GOLD_INGOTS)startGrinder();
-                    move(State.EXECUTING_CONTRACT);
-                } else if(!isExecutable(scoreboard.type) || now-stateSince>8000) {
-                    stopGrinder();log("Cannot safely prepare active objective "+scoreboard.type+"; waiting.");move(State.FALLBACK_REFRESH_MODE);
-                }
+                prepareActiveObjective(now);
                 break;
             case EXECUTING_CONTRACT:
                 if(serverStreakGoalComplete || (scoreboard.type!=ContractOffer.Type.KILL_STREAK
@@ -634,10 +689,11 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             case BUYING_SHOP: buyShop(now);break;
             case CONTRACT_COMPLETE:
                 stopGrinder();
-                String completeZone=com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
-                if(!"Spawn".equals(completeZone) && !"Overspawn".equals(completeZone) && now>=nextReturnToSpawn
+                if(!inMainSpawn() && now>=nextReturnToSpawn
                         && com.nezurstandalone.control.CommandCoordinator.send(this,"/oof"))nextReturnToSpawn=now+5000;
-                if(("Spawn".equals(completeZone) || "Overspawn".equals(completeZone)) && now>=nextAction){
+                if(inMainSpawn() && now>=nextAction){
+                    if(grinder()!=null&&grinder().isRestoringTemporaryPerk()){move(State.RESTORING_PERKS);break;}
+                    if(restoreFreshPantsAfterNoArmor&&!finishFreshPantsRestore())return;
                     selected=null;selectedFallback=false;nextAction=0;
                     move(grinder()!=null && grinder().isRestoringTemporaryPerk()?State.RESTORING_PERKS:
                             (autoNext.enabled?State.FINDING_CONTRACTOR:State.CHECKING_SCOREBOARD));
@@ -645,17 +701,23 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                 break;
             case RESTORING_PERKS:
                 if(grinder()==null || !grinder().isRestoringTemporaryPerk())
-                    move(scoreboard.active?State.CONTRACT_COMPLETE:
+                    move(scoreboard.active||restoreFreshPantsAfterNoArmor?State.CONTRACT_COMPLETE:
                             (autoNext.enabled?State.FINDING_CONTRACTOR:State.CHECKING_SCOREBOARD));
                 break;
             case FALLBACK_REFRESH_MODE:
+                if(keepGrindingUnsupported()){
+                    AutoGrinder fallbackGrinder=grinder();
+                    if(fallbackGrinder!=null&&fallbackGrinder.hasTemporaryPerkLease()){
+                        restorePerks();stopGrinder();break;
+                    }
+                    com.nezurstandalone.contract.ContractCombatPolicy.clear();startGrinder();break;
+                }
                 stopGrinder();
                 purchaseName=null;equipmentPurchasePending=false;
                 // A confirmed active contract must never drive navigation back to the Quest Master.
                 if(scoreboard!=null && scoreboard.active) {
                     cleanupNavigation();
-                    String zone=com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
-                    if(!"Spawn".equals(zone) && !"Overspawn".equals(zone) && now>=nextReturnToSpawn
+                    if(!inMainSpawn() && now>=nextReturnToSpawn
                             && com.nezurstandalone.control.CommandCoordinator.send(this,"/oof"))nextReturnToSpawn=now+5000;
                 }
                 else if(now-stateSince>3000)stayNearContractor(now);
@@ -693,6 +755,25 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                 && (scoreboard.type==ContractOffer.Type.NO_ARMOR_KILLS || scoreboard.type==ContractOffer.Type.DIAMOND_SWORD_FINAL_BLOW));
     }
 
+    private boolean prepareNpcHand(){
+        if(mc.thePlayer==null||mc.currentScreen!=null||AutoHeal.isHealing()||mc.thePlayer.isUsingItem())return false;
+        boolean[] empty=new boolean[9],safe=new boolean[9];
+        for(int i=0;i<9;i++){
+            ItemStack stack=mc.thePlayer.inventory.getStackInSlot(i);empty[i]=stack==null;
+            safe[i]=stack!=null&&stack.stackSize>0&&com.nezurstandalone.contract.ContractNpcHand.inert(net.minecraft.item.Item.getIdFromItem(stack.getItem()),stack.hasTagCompound(),stack.isItemEnchanted());
+        }
+        int slot=com.nezurstandalone.contract.ContractNpcHand.choose(empty,safe);
+        if(slot<0)return true; // No item is moved, dropped or overwritten to make room.
+        if(mc.thePlayer.inventory.currentItem==slot)return true;
+        if(!com.nezurstandalone.control.InventoryOwner.select(this,slot))return false;
+        npcHandLeased=true;return true;
+    }
+    private void releaseNpcHand(){if(npcHandLeased){com.nezurstandalone.control.InventoryOwner.release(this,true);npcHandLeased=false;}}
+
+    private boolean inMainSpawn(){
+        return mc.thePlayer!=null&&com.nezurstandalone.utils.PitMapManager.isInMainSpawn(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
+    }
+
     private void navigateToContractor(long now) {
         if(scoreboard!=null && scoreboard.active && !inspectingActiveIdentity) {
             closeOwnedMenu();cleanupNavigation();
@@ -702,14 +783,14 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         stopGrinder();
         if(grinder()!=null && grinder().isRestoringTemporaryPerk())return;
         if(mc.currentScreen!=null) return;
-        String zone=com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
-        if(!"Spawn".equals(zone) && !"Overspawn".equals(zone)) {
+        if(!inMainSpawn()) {
             cleanupNavigation();
             if(now>=nextReturnToSpawn && com.nezurstandalone.control.CommandCoordinator.send(this,"/oof"))
                 nextReturnToSpawn=now+5000;
             stateSince=now;
             return;
         }
+        if(!prepareNpcHand()){pauseNavigation();return;}
         npc=findNpc();
         if(npc==null) {if(now-stateSince>6000)recover("Contractor NPC not found.");return;}
         if(mc.thePlayer.getDistanceToEntity(npc)<=0.45) {
@@ -735,6 +816,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private void openContractor(long now) {
         if(mc.currentScreen instanceof GuiChest) {questsIssuedThisVisit.clear();pendingQuestClick=false;move(State.READING_MENU);return;}
         if(mc.currentScreen!=null)return;
+        if(!prepareNpcHand())return;
         npc=findNpc();
         if(npc==null || mc.thePlayer.getDistanceToEntity(npc)>0.8) {move(State.FINDING_CONTRACTOR);return;}
         PathfinderManager.stopIfAvailable(this);
@@ -786,6 +868,8 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         }
         if(now<nextAction || mc.thePlayer.inventory.getItemStack()!=null)return;
         if(title.equalsIgnoreCase("Quests & Contracts")) {
+            int countSlot=find(inv,"Big Time Contract");
+            if(countSlot>=0)dailyContracts.observe(loreLines(inv.getStackInSlot(countSlot)));
             for(int questSlot=0;!inspectingActiveIdentity && questSlot<inv.getSizeInventory();questSlot++){
                 ItemStack quest=inv.getStackInSlot(questSlot);
                 if(quest!=null && ContractOffer.shouldStartQuest(quest.getDisplayName(),lore(quest),
@@ -879,6 +963,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                 grinder().releaseGappleInspection();stopGrinder();
             }
             log("Selected "+selected.type+" mode="+choice.mode);
+            if(selected.type==ContractOffer.Type.GOLDEN_APPLES&&!ensureInitialAppleBeforeAcceptance(now))return;
             if(selected.type==ContractOffer.Type.NO_PERK_KILLS){
                 closeOwnedMenu();move(State.PREPARING_NO_PERK_OFFER);return;
             }
@@ -916,6 +1001,14 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         if(!classic)try{counter=net.minecraftforge.fml.relauncher.ReflectionHelper.findField(net.minecraft.inventory.Container.class,"transactionID","field_75150_e");counter.getShort(container);}
         catch(ReflectiveOperationException|RuntimeException error){uncertainAction("Cannot correlate Contractor transaction.");return false;}
         String sourceTitle=StringUtils.stripControlCodes(container.getLowerChestInventory().getDisplayName().getUnformattedText());
+        if(sourceTitle.equalsIgnoreCase("Start event?")&&StringUtils.stripControlCodes(stack.getDisplayName()).trim().equalsIgnoreCase("Accept contract")
+                &&selected!=null&&selected.type==ContractOffer.Type.GOLDEN_APPLES&&!ensureInitialAppleBeforeAcceptance(now))return false;
+        boolean pendingChoice=ContractOffer.isPendingChoice(sourceTitle,stack.getDisplayName());
+        boolean readOnlyNavigation=pendingChoice||ContractOffer.isPurchasePreview(sourceTitle,stack.getDisplayName())||ContractOffer.isChoicePreview(sourceTitle,stack.getDisplayName());
+        final double beforePurchase=hasGoldBalanceLine()?Utils.getGoldDouble():Double.NaN;
+        final double contractCost=sourceTitle.equalsIgnoreCase("Are you sure?")
+                &&StringUtils.stripControlCodes(stack.getDisplayName()).trim().equalsIgnoreCase("Confirm")
+                &&lore(stack).toLowerCase(java.util.Locale.ROOT).contains("purchase: big time contract")?contractPurchaseCost(lore(stack)):Double.NaN;
         mc.playerController.windowClick(container.windowId,slot,0,0,mc.thePlayer);
         pendingClick=true;pendingQuestClick=false;pendingContainer=container;pendingContents=signature(container.getLowerChestInventory());pendingSince=now;
         String[] expected=sourceTitle.equalsIgnoreCase("Quests & Contracts")?new String[]{"Are you sure?","Pick a contract!"}
@@ -926,6 +1019,10 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             expected=new String[]{sourceTitle};
         try{
             if(classicMenuAction)menuAction.beginServerContents(container,sourceTitle,pendingContents,System.nanoTime(),expected);
+            else if(readOnlyNavigation)menuAction.beginServerNavigation(container,sourceTitle,pendingContents,System.nanoTime(),container.windowId,counter.getShort(container),
+                    pendingChoice?new String[]{"Pick a contract!"}:expected);
+            else if(!Double.isNaN(contractCost))menuAction.beginServerPurchase(container,sourceTitle,pendingContents,System.nanoTime(),container.windowId,counter.getShort(container),
+                    ()->hasGoldBalanceLine()&&com.nezurstandalone.contract.ContractPurchaseEvidence.debited(beforePurchase,Utils.getGoldDouble(),contractCost),expected);
             else menuAction.beginTracked(container,sourceTitle,pendingContents,System.nanoTime(),container.windowId,counter.getShort(container),expected);
         }catch(ReflectiveOperationException|RuntimeException error){uncertainAction("Dispatched Contractor transaction could not be tracked.");return false;}
         clickRevision=menuRevision;
@@ -934,6 +1031,11 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         observedContents="";
         log("Clicked "+StringUtils.stripControlCodes(stack.getDisplayName())+" in "+observedMenu);
         return true;
+    }
+
+    private static double contractPurchaseCost(String lore){
+        java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?i)Cost:\\s*([0-9,]+(?:\\.[0-9]+)?)g").matcher(lore);
+        return m.find()?Double.parseDouble(m.group(1).replace(",","")):Double.NaN;
     }
 
     private List<ContractOffer> offers(IInventory inv) {
@@ -1179,13 +1281,25 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         if(hasUnconfirmedOperation()){
             uncertainAction("Session changed during an unconfirmed Contractor operation; inspect server inventory/menu before restarting.");return;
         }
-        cancelGapple();cancelInventoryOperation();closeOwnedMenu();cleanupNavigation();stopGrinder();
+        boolean resumeInitialApple=gappleActive&&gapplePreAccept;
+        if(!resumeInitialApple)cancelGapple();
+        cancelInventoryOperation();closeOwnedMenu();cleanupNavigation();stopGrinder();
         com.nezurstandalone.contract.ContractCombatPolicy.clear();
         com.nezurstandalone.control.CommandCoordinator.cancel(this);
         menuAction.clear();classicMenuAction=false;classicActionSlot=-1;classicActionName="";purchaseName=null;purchaseConfirmed=false;selected=null;
         pendingClick=pendingQuestClick=false;offerGate.reset();nextPoll=0;attempts=0;
         stuckWatch.reset();stuckRespawnUntil=0;world=mc.theWorld;
-        move(State.CHECKING_SCOREBOARD);
+        if(resumeInitialApple){
+            gappleFollow=null;gapplePad=gappleWait=null;gapplePendingOof=false;
+            if(mc.thePlayer!=null&&!mc.thePlayer.isDead&&mc.thePlayer.getHealth()>0){gappleDeathSeen=false;gappleRespawnAt=0;}
+            AutoGrinder preparing=grinder();
+            if(preparing!=null&&preparing.gapplePerksReady())
+                gapplePhase(State.GAPPLE_WAIT_APPLE,com.nezurstandalone.control.Clock.millis(),"Initial apple preparation retained across respawn; contract remains unaccepted.");
+            else {
+                if(preparing!=null&&!preparing.hasTemporaryPerkLease())preparing.requestGappleInspection();
+                gapplePhase(State.GAPPLE_PREPARING,com.nezurstandalone.control.Clock.millis(),"Rechecking preparation after session change; contract remains unaccepted.");startGrinder();
+            }
+        }else move(State.CHECKING_SCOREBOARD);
     }
     private final java.util.Map<com.nezurstandalone.settings.BooleanSetting,Boolean> contractorProfile=new java.util.LinkedHashMap<>();
     private void applyContractorProfile(AutoGrinder g) {
@@ -1214,23 +1328,29 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     private void restoreMidThreshold() {
         if(leasedMidSetting!=null){leasedMidSetting.value=previousMidThreshold;leasedMidSetting=null;}
     }
+    private boolean keepGrindingUnsupported(){
+        return isToggled()&&state==State.FALLBACK_REFRESH_MODE&&unsupportedContracts.getMode().equals("Keep Grinding")
+                &&scoreboard!=null&&scoreboard.active&&(selectedFallback||!isExecutable(scoreboard.type));
+    }
     private void startGrinder() {
-        // Final execution gate: no caller may enable grinding for unsupported objectives.
+        if(!isToggled())return;
+        boolean fallbackGrinding=keepGrindingUnsupported();
+        // Unsupported objectives allow ordinary grinding only under the explicit fallback mode.
         // Perk-only preparation must run before acceptance/eligibility is known.
         // The GOLDEN_APPLES policy and engine lease keep combat disabled.
         AutoGrinder preparationGrinder=grinder();
         boolean perkOnly=(state==State.GAPPLE_INSPECTING_OFFERS || state==State.GAPPLE_PREPARING)
                 && goldenApples.enabled && preparationGrinder!=null && preparationGrinder.hasTemporaryPerkLease();
         if(inspectingActiveIdentity){stopGrinder();return;}
-        if(!perkOnly && (scoreboard==null || !scoreboard.active || !isExecutable(scoreboard.type))) {
+        if(!perkOnly && !fallbackGrinding && (scoreboard==null || !scoreboard.active || !isExecutable(scoreboard.type))) {
             stopGrinder();cleanupNavigation();return;
         }
-        if(!perkOnly && scoreboard.type==ContractOffer.Type.DIAMOND_SWORD_FINAL_BLOW
+        if(!perkOnly && !fallbackGrinding && scoreboard.type==ContractOffer.Type.DIAMOND_SWORD_FINAL_BLOW
                 && !ensureDiamondSwordHotbar()){stopGrinder();return;}
         cleanupNavigation();
         AutoGrinder g=grinder();
         applyContractorProfile(g);
-        if(g!=null && scoreboard!=null && scoreboard.active && isExecutable(scoreboard.type)
+        if(g!=null && !fallbackGrinding && scoreboard!=null && scoreboard.active && isExecutable(scoreboard.type)
                 && scoreboard.type!=ContractOffer.Type.COLLECT_GOLD_INGOTS && scoreboard.type!=ContractOffer.Type.GOLDEN_APPLES && leasedMidSetting==null) {
             for(com.nezurstandalone.settings.Setting setting:g.getSettings())
                 if(setting instanceof com.nezurstandalone.settings.NumberSetting && setting.name.equals("Min Mid Players")) {
@@ -1281,10 +1401,25 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             logImportant("GOLDEN_APPLES /oof death observed; cooldown remains anchored to dispatch.");
         } else if(state!=State.GAPPLE_PREPARING){gappleDeaths++;logImportant("GOLDEN_APPLES Natural death #"+gappleDeaths);}
     }
+    /** Recheck actual inventory both before choosing and immediately before the acceptance click. */
+    private boolean ensureInitialAppleBeforeAcceptance(long now){
+        if(goldenAppleCount()>0)return true;
+        closeOwnedMenu();cleanupNavigation();stopGrinder();offerGate.reset();
+        AutoGrinder g=grinder();
+        if(goldenApples.enabled&&g!=null&&g.gappleEligible()){
+            gapplePreAccept=true;beginGapple(now);
+            logImportant("Acceptance blocked: no usable Golden Apple. Obtaining the initial apple before starting the contract.");
+        }else{
+            restorePerks();noOfferRetryAt=now+300000;
+            move(g!=null&&g.isRestoringTemporaryPerk()?State.RESTORING_PERKS:State.NO_VILE_OFFERS);
+            logImportant("Acceptance blocked: no Golden Apple and preparation is unavailable; leaving this contract unaccepted.");
+        }
+        return false;
+    }
     private int goldenAppleSlot(){
         for(int i=0;i<36;i++){
             ItemStack item=mc.thePlayer.inventory.getStackInSlot(i);
-            if(item!=null && item.getItem()==net.minecraft.init.Items.golden_apple
+            if(item!=null && item.stackSize>0 && item.getItem()==net.minecraft.init.Items.golden_apple
                     && !StringUtils.stripControlCodes(item.getDisplayName()).toLowerCase(java.util.Locale.ROOT).contains("head"))return i;
         }
         return -1;
@@ -1293,7 +1428,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         int count=0;
         for(int i=0;i<36;i++){
             ItemStack item=mc.thePlayer.inventory.getStackInSlot(i);
-            if(item!=null && item.getItem()==net.minecraft.init.Items.golden_apple
+            if(item!=null && item.stackSize>0 && item.getItem()==net.minecraft.init.Items.golden_apple
                     && !StringUtils.stripControlCodes(item.getDisplayName()).toLowerCase(java.util.Locale.ROOT).contains("head"))count+=item.stackSize;
         }
         return count;
@@ -1320,9 +1455,11 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
                             && above!=net.minecraft.init.Blocks.stone_pressure_plate && above!=net.minecraft.init.Blocks.wooden_pressure_plate
                             && above!=net.minecraft.init.Blocks.heavy_weighted_pressure_plate && above!=net.minecraft.init.Blocks.light_weighted_pressure_plate)return true;
                     if(!mc.theWorld.isAirBlock(pos.up(2)))return true;
-                    double x=pos.getX()+.5,z=pos.getZ()+.5,length=Math.hypot(x,z);
+                    double x=pos.getX()+.5,z=pos.getZ()+.5;
+                    double cx=com.nezurstandalone.utils.PitMapManager.getMidCenterX(),cz=com.nezurstandalone.utils.PitMapManager.getMidCenterZ();
+                    double dx=x-cx,dz=z-cz,length=Math.hypot(dx,dz);
                     if(length<1)return true;
-                    double wx=x-x/length*Math.max(7.0,gappleWaitDistance.value),wz=z-z/length*Math.max(7.0,gappleWaitDistance.value);
+                    double wx=x-dx/length*Math.max(7.0,gappleWaitDistance.value),wz=z-dz/length*Math.max(7.0,gappleWaitDistance.value);
                     net.minecraft.util.BlockPos floor=new net.minecraft.util.BlockPos(wx,pos.getY(),wz);
                     if(!mc.theWorld.getBlockState(floor).getBlock().getMaterial().isSolid()
                             || mc.theWorld.getBlockState(floor).getBlock()==net.minecraft.init.Blocks.slime_block
@@ -1395,7 +1532,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
             } else gapplePhase(oof?State.GAPPLE_WAIT_NEXT_APPLE:State.GAPPLE_WAIT_APPLE,now,"Respawn detected; waiting for consolation apple.");
         }
         if(gapplePreAccept && goldenAppleSlot()>=0
-                && "Spawn".equals(com.nezurstandalone.utils.PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ))){
+                && inMainSpawn()){
             if(!gappleSelectApple())return;
             com.nezurstandalone.control.InventoryOwner.release(this,true);
             gapplePreAccept=false;gappleActive=false;stopGrinder();cleanupNavigation();offerGate.reset();
@@ -1552,6 +1689,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         return true;
     }
     private void stopForDailyLimit() {
+        dailyContracts.exhausted();
         cancelGapple();
         logImportant("All daily contracts are used. AutoContractor and AutoGrinder disabled.");
         // Disable after contractor cleanup too: cleanup may restore the original grinder state.
@@ -1594,6 +1732,25 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         if(killStreak.enabled)list.add(ContractOffer.Type.KILL_STREAK);
         return list;
     }
+    private void prepareActiveObjective(long now){
+        ContractScoreboard.Snapshot expected=scoreboard;
+        long session=actionSession;
+        if(!isToggled()||expected==null||!expected.active||state!=State.PREPARING_CONTRACT)return;
+        boolean executable=isExecutable(expected.type);
+        boolean ready=executable&&prepareObjective(expected.type);
+        // Preparation may stop this module and clear its fields synchronously.
+        // Never resume the old tick after cleanup or a changed contract/session.
+        if(!isToggled()||scoreboard!=expected||actionSession!=session||state!=State.PREPARING_CONTRACT)return;
+        if(ready){
+            com.nezurstandalone.contract.ContractCombatPolicy.install(expected.type,(long)sneakDelay.value,sneakRadius.value);
+            if(expected.type!=ContractOffer.Type.COLLECT_GOLD_INGOTS)startGrinder();
+            if(!isToggled()||scoreboard!=expected||actionSession!=session||state!=State.PREPARING_CONTRACT)return;
+            move(State.EXECUTING_CONTRACT);
+        }else if(!executable||now-stateSince>8000){
+            stopGrinder();log("Cannot safely prepare active objective "+expected.type+"; waiting.");move(State.FALLBACK_REFRESH_MODE);
+        }
+    }
+
     private boolean prepareObjective(ContractOffer.Type type) {
         if(type==ContractOffer.Type.NO_ARMOR_KILLS)return ensureNoArmor();
         if(type==ContractOffer.Type.NO_PERK_KILLS)return grinder()!=null && grinder().isTemporaryNoPerkReady();
@@ -1666,6 +1823,76 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         }
         return false;
     }
+    private void queueFreshPantsAfterContract(){
+        if(scoreboard!=null&&scoreboard.type==ContractOffer.Type.NO_ARMOR_KILLS
+                ||selected!=null&&selected.type==ContractOffer.Type.NO_ARMOR_KILLS)
+            restoreFreshPantsAfterNoArmor=true;
+    }
+    /** Death/respawn may reset navigation, but must not bypass completed-contract equipment. */
+    private void resumeCompletedEquipment(){
+        if(restoreFreshPantsAfterNoArmor&&state!=State.CONTRACT_COMPLETE&&state!=State.RESTORING_PERKS)
+            move(State.CONTRACT_COMPLETE);
+    }
+    /** A delayed menu-close packet can dismiss window 0 after acceptance. Retain the exact
+     * screen/action identity and wait for its result; never retry the dispatched click. */
+    private boolean resumeClosedArmorScreen(){
+        if(armorScreen==null||mc.thePlayer==null||mc.currentScreen!=null
+                ||mc.thePlayer.openContainer!=mc.thePlayer.inventoryContainer
+                ||!com.nezurstandalone.control.GuiLease.owns(this)||!com.nezurstandalone.input.WindowActions.pending(this))return false;
+        if(armorScreenRecoveries++>0){uncertainAction("Armor inventory repeatedly closed during the same transaction; inspect inventory before restarting.");return true;}
+        mc.displayGuiScreen(armorScreen);
+        log("Restored owned armor inventory; waiting for the existing transaction result.");
+        return true;
+    }
+    private int freshPantsSlot(){
+        for(int i=0;i<36;i++){
+            ItemStack stack=mc.thePlayer.inventory.getStackInSlot(i);
+            if(stack!=null&&com.nezurstandalone.contract.ContractFreshPants.matches(stack.getItem()==net.minecraft.init.Items.leather_leggings,
+                    stack.stackSize,stack.isItemEnchanted(),stack.getDisplayName(),loreLines(stack)))return i;
+        }
+        return -1;
+    }
+    /** One native equip click, then its exact transaction result before starting another contract. */
+    private boolean finishFreshPantsRestore(){
+        if(mc.thePlayer==null||AutoHeal.isHealing()||mc.thePlayer.isUsingItem())return false;
+        if(resumeClosedArmorScreen())return false;
+        if(armorScreen!=null){
+            if(mc.currentScreen!=armorScreen||!com.nezurstandalone.control.GuiLease.owns(this)
+                    ||mc.thePlayer.openContainer!=mc.thePlayer.inventoryContainer){
+                if(com.nezurstandalone.input.WindowActions.pending(this))uncertainAction("Fresh pants inventory interrupted before confirmation; inspect inventory before restarting.");
+                else cancelInventoryOperation();
+                return false;
+            }
+            if(!inventoryActionReady())return false;
+            if(freshPantsDispatched){
+                if(mc.thePlayer.inventory.armorInventory[1]==null){uncertainAction("Fresh pants equip was not confirmed in the leggings slot.");return false;}
+                cancelInventoryOperation();restoreFreshPantsAfterNoArmor=false;log("Fresh pants equipped; continuing to the next contract.");return true;
+            }
+        }
+        // Preserve anything already equipped by the player or another module.
+        if(mc.thePlayer.inventory.armorInventory[1]!=null){
+            if(armorScreen!=null)cancelInventoryOperation();restoreFreshPantsAfterNoArmor=false;return true;
+        }
+        int source=freshPantsSlot();
+        if(source<0){
+            if(armorScreen!=null)cancelInventoryOperation();restoreFreshPantsAfterNoArmor=false;
+            log("No fresh pants available; continuing without equipping pants.");return true;
+        }
+        if(mc.currentScreen!=null&&mc.currentScreen!=armorScreen||mc.thePlayer.openContainer!=mc.thePlayer.inventoryContainer
+                ||mc.thePlayer.inventory.getItemStack()!=null||com.nezurstandalone.input.NativeActionGate.manual())return false;
+        if(!com.nezurstandalone.control.GuiLease.acquire(this))return false;
+        if(!com.nezurstandalone.control.InventoryOwner.acquire(this)){com.nezurstandalone.control.GuiLease.release(this);return false;}
+        if(armorScreen==null){
+            pauseNavigation();freshPantsDispatched=false;
+            armorScreen=new net.minecraft.client.gui.inventory.GuiInventory(mc.thePlayer);
+            mc.displayGuiScreen(armorScreen);return false;
+        }
+        if(!inventoryActionReady())return false;
+        armorScreenRecoveries=0;
+        com.nezurstandalone.input.WindowActions.click(this,mc.thePlayer.inventoryContainer.windowId,source<9?source+36:source,0,1);
+        freshPantsDispatched=true;return false;
+    }
+
     private boolean canStowArmor() {
         if(mc.thePlayer==null)return false;
         int armor=0,free=0;
@@ -1674,6 +1901,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         return free>=armor;
     }
     private net.minecraft.client.gui.inventory.GuiInventory armorScreen;
+    private int armorScreenRecoveries;
     private long nextArmorClick;
     private int pendingArmorSlot=-1;
     private int armorDestination=-1;
@@ -1683,9 +1911,10 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     }
     private boolean ensureNoArmor() {
         if(mc.thePlayer==null || AutoHeal.isHealing() || mc.thePlayer.isUsingItem())return false;
+        if(resumeClosedArmorScreen())return false;
         if(armorScreen!=null && (mc.currentScreen!=armorScreen || !com.nezurstandalone.control.GuiLease.owns(this)
                 || mc.thePlayer.openContainer!=mc.thePlayer.inventoryContainer)){
-            if(com.nezurstandalone.input.WindowActions.pending(this))uncertainAction("Armor inventory changed before its result; inspect inventory before restarting.");
+            if(com.nezurstandalone.input.WindowActions.pending(this))uncertainAction("Armor inventory changed before its result (screen="+(mc.currentScreen==null?"closed":mc.currentScreen.getClass().getSimpleName())+", lease="+com.nezurstandalone.control.GuiLease.owns(this)+", window="+mc.thePlayer.openContainer.windowId+"); inspect inventory before restarting.");
             else cancelInventoryOperation();return false;
         }
         if(mc.currentScreen!=null && mc.currentScreen!=armorScreen)return false;
@@ -1703,6 +1932,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         }
         for(int armorIndex=3;armorIndex>=0;armorIndex--)if(mc.thePlayer.inventory.armorInventory[armorIndex]!=null){
             // One native quick-move, then the exact server transaction result; no cursor chain.
+            armorScreenRecoveries=0;
             com.nezurstandalone.input.WindowActions.click(this,mc.thePlayer.inventoryContainer.windowId,8-armorIndex,0,1);
             return false;
         }
@@ -1752,7 +1982,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         com.nezurstandalone.input.WindowActions.cancel(this);
         if(mc.thePlayer!=null && (mc.currentScreen==transferScreen&&transferScreen!=null
                 || mc.currentScreen==armorScreen&&armorScreen!=null))mc.thePlayer.closeScreen();
-        transferScreen=null;armorScreen=null;transferBefore=transferDestination=null;transferDispatched=false;
+        transferScreen=null;armorScreen=null;transferBefore=transferDestination=null;transferDispatched=false;freshPantsDispatched=false;
         com.nezurstandalone.control.GuiLease.release(this);
         if(inventoryOwned)com.nezurstandalone.control.InventoryOwner.release(this,false);
     }
@@ -1770,6 +2000,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
     /** Completion is terminal for this contract, even while its old sidebar remains visible. */
     private void finishContract(String reason){
         if(completedSidebarSuppressed)return;
+        queueFreshPantsAfterContract();dailyContracts.completed();
         hudCompleted++;hudSnapshotAt=0;
         cancelGapple();closeOwnedMenu();cleanupNavigation();
         com.nezurstandalone.contract.ContractCombatPolicy.clear();
@@ -1785,8 +2016,9 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         move(State.CONTRACT_COMPLETE);log(reason);
     }
     private boolean completedSidebarSuppressed;
+    private boolean restoreFreshPantsAfterNoArmor,freshPantsDispatched;
     private net.minecraft.entity.item.EntityItem goldTarget;
-    private int lastGoldProgress=-1;
+    private int lastGoldProgress=-1,hudGoldVisible;
     private boolean liveGold(net.minecraft.entity.item.EntityItem item){
         return item!=null && !item.isDead && mc.theWorld.loadedEntityList.contains(item)
                 && item.getEntityItem()!=null && item.getEntityItem().getItem()==net.minecraft.init.Items.gold_ingot;
@@ -1962,6 +2194,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         return ContractSelector.DEFAULT_PRIORITY.indexOf(type)+1;
     }
     private void closeOwnedMenu() {
+        releaseNpcHand();
         if(armorScreen!=null) {
             if(mc.thePlayer!=null && mc.currentScreen==armorScreen)mc.thePlayer.closeScreen();
             armorScreen=null;pendingArmorSlot=-1;armorDestination=-1;com.nezurstandalone.control.GuiLease.release(this);
@@ -1971,6 +2204,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         com.nezurstandalone.control.GuiLease.release(this);
     }
     private void pauseNavigation(){
+        releaseNpcHand();
         com.nezurstandalone.control.MovementKeys.release("contractor-gold");
         com.nezurstandalone.control.MovementKeys.release("contractor-approach");
         com.nezurstandalone.control.MovementKeys.release("contractor-gapple");
@@ -1979,6 +2213,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         PathfinderManager.clear(this,true);
     }
     private void cleanupNavigation() {
+        releaseNpcHand();
         menuAction.clear();
         goldTarget=null;lastGoldProgress=-1;goldPickupRecovery.reset();blockedGoldTargets.clear();
         com.nezurstandalone.control.MovementKeys.release("contractor-gold");
@@ -1990,6 +2225,7 @@ public final class AutoContractor extends Module implements com.nezurstandalone.
         npc=null;observedContainer=null;observedMenu="";observedContents="";pendingClick=false;
     }
     private void cleanup() {
+        restoreFreshPantsAfterNoArmor=false;
         cancelInventoryOperation();menuAction.clear();
         cancelGapple();
         stuckWatch.reset();stuckRespawnUntil=0;

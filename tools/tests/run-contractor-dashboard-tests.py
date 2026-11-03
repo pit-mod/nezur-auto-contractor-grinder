@@ -28,10 +28,12 @@ public class ContractorCompletionTest {
  int hudCompleted,classicActionSlot=1,attempts=2,missingSamples=2,cleanupCalls,restoreCalls,stopCalls;
  Object pendingContainer=new Object(),selected=new Object(),observedContainer=new Object();String pendingContents="old",classicActionName="old",purchaseName="old",observedContents="old";
  ContractScoreboard.Snapshot scoreboard;ContractTracker contractTracker=new ContractTracker();
+ ContractDailyCount dailyContracts=new ContractDailyCount();
  static class Reset{int calls;void reset(){calls++;}void cancelSwap(){calls++;}}
  Reset connection=new Reset(),offerGate=new Reset(),stuckWatch=new Reset();
  static class Flag{boolean enabled=true;}Flag debug=new Flag();
  boolean restoring,grinderEnabled=true;String order="";
+ void queueFreshPantsAfterContract(){}
  void cancelGapple(){order+="cancel ";}void closeOwnedMenu(){order+="close ";}
  void cleanupNavigation(){cleanupCalls++;pendingClick=false;order+="navigation ";}
  void restorePerks(){restoreCalls++;restoring=true;order+="restore ";}
@@ -59,7 +61,9 @@ public class ContractorCompletionTest {
   check(c.scoreboard.current==25&&!c.serverStreakGoalComplete,"Local goal does not fabricate server completion");
   c.scoreboard=c.observeContractSidebar(raw,Collections.<String>emptyList(),400);
   check(c.scoreboard.current==25,"Temporary missing player streak is not a death");
+  c.dailyContracts.context("player",86400000L);c.dailyContracts.observe(Arrays.asList("Daily contracts: 4"));
   c.finishContract("server chat");
+  check(c.dailyContracts.remaining()==3&&c.dailyContracts.estimated(),"Completion updates daily count once and marks estimate");
   check(c.completedSidebarSuppressed&&c.state==State.CONTRACT_COMPLETE&&!c.scoreboard.active,"Chat completion immediately clears active contract");
   check(c.selected==null&&!c.selectedFallback&&!c.acceptedByThisModule&&!c.contractStartedChat,"Selected and accepted identity fully cleared");
   check(!c.pendingClick&&!c.pendingQuestClick&&c.pendingContainer==null&&c.pendingSince==0,"Old menu action cannot survive completion");
@@ -69,7 +73,7 @@ public class ContractorCompletionTest {
   check(c.cleanupCalls==1&&c.connection.calls==1&&com.nezurstandalone.control.CommandCoordinator.cancelled==1,"Owned navigation and pending travel cancelled");
   c.scoreboard=c.observeContractSidebar(raw,Arrays.asList("Streak: 25"),500);
   check(!c.scoreboard.active&&!c.serverStreakGoalComplete,"Stale sidebar cannot revive completed contract");
-  c.finishContract("duplicate");check(c.hudCompleted==1&&c.restoreCalls==1,"Duplicate completion does not count or restore twice");
+  c.finishContract("duplicate");check(c.dailyContracts.remaining()==3,"Duplicate completion cannot reduce daily count twice");check(c.hudCompleted==1&&c.restoreCalls==1,"Duplicate completion does not count or restore twice");
   c.completedSidebarSuppressed=false;c.contractTracker.clear();c.contractTracker.confirm(raw,600);
   c.scoreboard=c.observeContractSidebar(raw,Arrays.asList("Streak: 1"),700);
   check(c.scoreboard.active&&c.scoreboard.current==1,"A newly accepted contract starts independent tracking");
@@ -91,7 +95,7 @@ public class ContractorCompletionTest {
 }''')
 game=Path.home()/'.gradle/caches/minecraft/net/minecraft/minecraft/1.8.9/minecraft-1.8.9.jar'
 with zipfile.ZipFile(game) as z:(out/'ascii.png').write_bytes(z.read('assets/minecraft/textures/font/ascii.png'))
-paths=[root/p for p in ['src/main/java/com/nezurstandalone/gui/GrinderDashboard.java','src/main/java/com/nezurstandalone/gui/ContractorDashboard.java','src/main/java/com/nezurstandalone/utils/PitStreak.java','src/main/java/com/nezurstandalone/contract/ContractTracker.java','src/main/java/com/nezurstandalone/contract/ContractOffer.java','src/main/java/com/nezurstandalone/contract/ContractScoreboard.java','tools/tests/dashboard-stubs/com/nezurstandalone/gui/GuiDraw.java','tools/tests/ContractorDashboardTest.java']]+list(src.rglob('*.java'))
+paths=[root/p for p in ['src/main/java/com/nezurstandalone/gui/GrinderDashboard.java','src/main/java/com/nezurstandalone/gui/ContractorDashboard.java','src/main/java/com/nezurstandalone/gui/ContractorHudRenderer.java','src/main/java/com/nezurstandalone/utils/PitStreak.java','src/main/java/com/nezurstandalone/contract/ContractTracker.java','src/main/java/com/nezurstandalone/contract/ContractDailyCount.java','src/main/java/com/nezurstandalone/contract/ContractOffer.java','src/main/java/com/nezurstandalone/contract/ContractScoreboard.java','tools/tests/dashboard-stubs/com/nezurstandalone/gui/GuiDraw.java','tools/tests/ContractorDashboardTest.java']]+list(src.rglob('*.java'))
 argfile=out/'javac.args';argfile.write_text('\n'.join('"'+str(a).replace('\\','/')+'"' for a in ['-encoding','UTF-8','-d',classes,*paths]),encoding='utf-8')
 subprocess.run([str(java/'javac.exe'),'@'+str(argfile)],check=True)
 subprocess.run([str(java/'java.exe'),'-cp',str(classes),'ContractorCompletionTest'],check=True)

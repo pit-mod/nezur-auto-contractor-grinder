@@ -131,4 +131,11 @@ public class MixinNetHandlerPlayClient {
         else if(packet.getOpCode()==3)com.nezurstandalone.engine.GrinderEngine.serverDeathObserved(entity);
     }
 
+
+    @Inject(method={"handleChat","func_147251_a"},at=@At("HEAD"),remap=false)
+    private void contractorHitBar(net.minecraft.network.play.server.S02PacketChat packet,CallbackInfo ci){
+        if(loadoutCurrentHandler()&&packet.getType()==2)
+            com.nezurstandalone.engine.GrinderEngine.tdmActionBar(packet.getType(),packet.getChatComponent().getUnformattedText());
+    }
+
 }

@@ -41,6 +41,12 @@ public class AutoReconnect extends Module {
         return module.isToggled();
     }
     public static boolean requestLobbySwap(Object requester,java.util.function.BooleanSupplier stillEnabled) {
+        return requestLobbySwap(requester,stillEnabled,false);
+    }
+    public static boolean requestDirectLobbySwap(Object requester,java.util.function.BooleanSupplier stillEnabled) {
+        return requestLobbySwap(requester,stillEnabled,true);
+    }
+    private static boolean requestLobbySwap(Object requester,java.util.function.BooleanSupplier stillEnabled,boolean direct) {
         if(!stillEnabled.getAsBoolean()||holdLobbySwapForCarePackage())return false;
         if(!enableRecovery())return false;
         AutoReconnect module=com.nezurstandalone.Nezur.moduleManager.getModuleByClass(AutoReconnect.class);
@@ -51,7 +57,7 @@ public class AutoReconnect extends Module {
             java.util.logging.Logger.getLogger(AutoReconnect.class.getName()).info(
                     "Lobby swap requested by "+requester.getClass().getSimpleName());
         }
-        module.recovery.requestSwap(now,stillEnabled);
+        module.recovery.requestSwap(now,stillEnabled,direct);
         return true;
     }
 

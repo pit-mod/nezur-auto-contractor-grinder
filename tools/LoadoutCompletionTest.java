@@ -18,6 +18,20 @@ public final class LoadoutCompletionTest {
     }
     private static void purchased(LoadoutPlanner p){p.confirmationOpened();check(p.canConfirm(1),"purchase eligible");p.confirmed(1);}
     public static void main(String[] args) {
+        for(boolean walletFirst:new boolean[]{true,false}) {
+            LoadoutPlanner p=start(Kind.PERK);purchased(p);
+            if(walletFirst)p.gold(1900,2);
+            p.observeChoice(Kind.PERK,"Second Gapple",lore("Click to select!"));
+            if(!walletFirst)p.gold(1900,2);
+            check(p.balance(2)==1900,"verified purchase reconciles wallet above original debit ceiling in either packet order");
+            check(p.prepareOwnedSelection(3),"earnings during debit do not strand verified equip");
+        }
+        {
+            LoadoutPlanner p=start(Kind.PERK);purchased(p);p.gold(1900,2);
+            check(Double.isNaN(p.balance(2)),"wallet earnings alone cannot resolve an unconfirmed purchase");
+            p.requirements(1,false);p.requirements(60,false);p.gold(7006.61,3);
+            check(p.balance(3)==7006.61,"prestige level reset clears purchase debit hold");
+        }
         for(Kind kind:Kind.values()) {
             String chooserKind=kind==Kind.PERK?"choosePerk":"chooseStreak";
             String title=kind==Kind.PERK?"Choose a perk":"Choose a killstreak";

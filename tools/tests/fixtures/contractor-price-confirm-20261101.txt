@@ -1,0 +1,10 @@
+MENU TITLE : "Are you sure?"
+SIZE : 27 slots
+SLOT 11
+ id=403 meta=0 count=1
+ name="Confirm"
+ lore: Purchase: Big Time Contract
+ lore: Cost: 1,000g
+SLOT 15
+ id=159 meta=14 count=1
+ name="Cancel"

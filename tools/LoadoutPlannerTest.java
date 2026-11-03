@@ -67,7 +67,7 @@ public final class LoadoutPlannerTest {
         p=planner();ok(p.next(null,0)==null,"23 no actionable selections zero interactions");
         purchase(p,Kind.PERK,1,"A","5000");p.gold(6000,0);ok(p.next(null,0)!=null,"ready before external spending");p.gold(4000,1);ok(p.next(null,1)==null,"24 external spending immediately invalidates affordability");
         p=planner();purchase(p,Kind.PERK,1,"A","5000");purchase(p,Kind.PERK,2,"B","10000");p.gold(20000,0);s=p.next(null,0);p.begin(s,0);p.applied(0);verify(p,s,1);
-        ok(p.next(null,1)==null,"lag: no second paid action until wallet debit observed");p.gold(20000,2);ok(p.next(null,2)==null,"repeated stale wallet amount cannot settle debit");p.gold(21000,3);ok(p.next(null,3)==null,"unrelated income before debit cannot settle pending spend");p.gold(15000,4);ok(p.next(null,4)!=null,"authoritative debit enables next purchase");
+        ok(p.next(null,1)==null,"lag: no second paid action until wallet debit observed");p.gold(20000,2);ok(p.next(null,2)==null,"repeated stale wallet amount cannot settle debit");p.gold(21000,3);ok(p.next(null,3)!=null,"verified purchase plus changed wallet reconciles concurrent earnings");p.gold(15000,4);ok(p.next(null,4)!=null,"authoritative debit enables next purchase");
         p=planner();purchase(p,Kind.PERK,1,"A","5000");purchase(p,Kind.PERK,2,"B","10000");p.gold(20000,0);s=p.next(null,0);p.begin(s,0);p.applied(0);
         ok(!p.canConfirm(1),"chooser click alone cannot authorize a confirmation");p.confirmationOpened();
         ok(p.canConfirm(1),"correlated confirmation accepts fresh adequate funds");p.gold(4000,2);ok(!p.canConfirm(2),"external spending cancels unaffordable confirmation");

@@ -7,11 +7,15 @@ import java.util.Locale;
 public final class ContractorDashboard {
     public static final class Input {
         public String phase="Checking scoreboard",badge="CHECKING",server="",uptime="00:00";
-        public boolean active,detailed,paused,restoring,perkLease;
+        public boolean active,detailed,paused,restoring,perkLease,remainingEstimated;
         public String type="",task="",choice="",menu="",shop="",purchase="",event="",equipment="None",perk="";
+        public int remaining=-1;
         public int current,target,seconds=-1,completed,retries,maxRetries,rejected,vile=-1;
         public double gold=Double.NaN,npcDistance=-1;
         public long actionSeconds=-1,retrySeconds=-1;
+        public String contextTitle="";
+        public final java.util.List<Row> details=new java.util.ArrayList<>();
+        public void detail(String label,String value){details.add(new Row(label,value,GrinderDashboard.BLUE));}
         public int accent=GrinderDashboard.BLUE;
     }
     public static Snapshot build(Input i){
@@ -36,6 +40,7 @@ public final class ContractorDashboard {
             Section choice=new Section("Selected choice",i.vile>=0?i.vile+" Vile":"",GrinderDashboard.VIOLET);
             taskRows(choice,i.choice);s.sections.add(choice);
         }
+        s.status.add(new Row("Contracts left",i.remaining<0?"Unknown":(i.remainingEstimated?"~":"")+i.remaining,GrinderDashboard.BLUE));
         if(!i.event.isEmpty())s.status.add(new Row("Event",i.event,GrinderDashboard.GOLD));
         if(i.retrySeconds>=0)s.status.add(new Row("Retry in",time(i.retrySeconds),GrinderDashboard.GOLD));
         if(i.npcDistance>=0 || !i.menu.isEmpty()){
@@ -51,6 +56,10 @@ public final class ContractorDashboard {
             if(!i.shop.isEmpty())equipment.row("Needed",i.shop);
             if(!i.purchase.isEmpty())equipment.row("Verifying",i.purchase);
             s.sections.add(equipment);
+        }
+        if(!i.details.isEmpty()){
+            Section context=new Section(i.contextTitle,"LIVE",GrinderDashboard.BLUE);
+            context.rows.addAll(i.details);s.sections.add(context);
         }
         if(i.detailed){
             Section debug=new Section("Diagnostics","",GrinderDashboard.BLUE).row("State",i.phase)

@@ -6,11 +6,24 @@ public final class MenuTransition {
     private boolean tracked, acknowledged, rejected, responseOnly,strict;
     private Object authoritativeContainer;
     private boolean serverContentsRequired;
+    private boolean serverNavigation;
+    private java.util.function.BooleanSupplier purchaseEvidence;
     private Object serverContainer;
     /** Active, guarded server inventory evidence; permits an in-place chooser refresh. */
     public void serverContents(Object container){if(serverContentsRequired&&isPending())serverContainer=container;}
     public void beginServerContents(Object source,String kind,String contents,long now,String... expected){
         begin(source,kind,contents,now,expected);serverContentsRequired=true;serverContainer=null;
+    }
+    /** Read-only navigation may finish on a replacement menu populated by the server. */
+    public void beginServerNavigation(Object source,String kind,String contents,long now,int window,short action,String... expected){
+        beginTracked(source,kind,contents,now,window,action,expected);
+        serverContentsRequired=true;serverContainer=null;serverNavigation=true;
+    }
+    /** A paid chooser needs its ACK or an observed debit, in addition to fresh replacement contents. */
+    public void beginServerPurchase(Object source,String kind,String contents,long now,int window,short action,
+                                    java.util.function.BooleanSupplier debit,String... expected){
+        beginTracked(source,kind,contents,now,window,action,expected);
+        serverContentsRequired=true;serverContainer=null;purchaseEvidence=debit;
     }
     private int sourceSlot;
     public void beginAuthoritative(Object source,String kind,String contents,long now,int window,short action,int slot,String... expected){
@@ -62,7 +75,8 @@ public final class MenuTransition {
                 || !sourceContents.equals(contents);
         if (!responseOnly && container != null && (changed||serverContentsRequired&&container==serverContainer)
                 && (!serverContentsRequired||container==serverContainer)
-                && (!tracked || acknowledged) && (!strict || container!=source&&container==authoritativeContainer)) {
+                && (!tracked || acknowledged || (serverNavigation||purchaseEvidence!=null&&purchaseEvidence.getAsBoolean())&&container!=source)
+                && (!strict || container!=source&&container==authoritativeContainer)) {
             for (String next : expected) {
                 if (next.equals(kind)) {
                     clear();
@@ -75,7 +89,7 @@ public final class MenuTransition {
 
     public void clear() {
         tracked = acknowledged = rejected = responseOnly = strict = false;authoritativeContainer=null;sourceSlot=-1;
-        serverContentsRequired=false;serverContainer=null;
+        serverContentsRequired=serverNavigation=false;serverContainer=null;purchaseEvidence=null;
         source = null;
         sourceKind = null;
         sourceContents = null;

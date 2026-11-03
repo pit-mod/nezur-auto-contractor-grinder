@@ -60,17 +60,16 @@ public final class RaffleController {
     }
     public EntityItem findTicket(long now) {
         skipped.entrySet().removeIf(e->e.getValue()<=now);
-        if(valid(ticket)) {
-            if(!progress.expired(now,mc.thePlayer.getDistanceToEntity(ticket)))return ticket;
-            failedTicket(now);
-        }
+        if(valid(ticket) && progress.expired(now,mc.thePlayer.getDistanceToEntity(ticket)))failedTicket(now);
+        EntityItem previous=ticket;
         ticket=null;
         double nearest=Double.MAX_VALUE;
         for(Entity entity:mc.theWorld.loadedEntityList)if(entity instanceof EntityItem && valid((EntityItem)entity)) {
             double distance=mc.thePlayer.getDistanceSqToEntity(entity);
-            if(distance<nearest && ticketStand((EntityItem)entity)!=null) {nearest=distance;ticket=(EntityItem)entity;}
+            if((distance<nearest || distance==nearest && ticket!=null && entity.getEntityId()<ticket.getEntityId())
+                    && ticketStand((EntityItem)entity)!=null) {nearest=distance;ticket=(EntityItem)entity;}
         }
-        progress.begin(now,ticket==null?Double.MAX_VALUE:Math.sqrt(nearest));
+        if(ticket!=previous)progress.begin(now,ticket==null?Double.MAX_VALUE:Math.sqrt(nearest));
         return ticket;
     }
     public void failedTicket(long now) {

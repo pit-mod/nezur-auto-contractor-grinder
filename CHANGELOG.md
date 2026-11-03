@@ -1,3 +1,19 @@
+# 1.5.5 — Contractor recovery and current automation
+
+- Update map/region detection and share loaded spawn/mid landing geometry across both bots.
+- Confirm TDM assists from named server hit bars, including opponents protected by Bonk.
+- Add safer NPC approach, contracts remaining, unsupported-contract behavior and context-specific HUD designs.
+- Require a golden apple before accepting its contract; use a nine-second default cooldown from `/oof` dispatch.
+- Recover a closed owned armor inventory without replaying its pending action.
+- Preserve fresh-pants restoration after no-armor completion across death/respawn; skip when absent.
+- Isolate Contractor loadouts from normal Auto Perk/Auto Killstreak maintenance and improve verified purchase accounting.
+- Recover stalled raffle navigation and prevent overlapping automation HUDs.
+- Preserve free Quick Setup, independent combat settings, gold recovery, sneak options and Vile-only fallback.
+- No authentication, licensing or additional premium modules added.
+
+Minecraft Forge 1.8.9, Java 8. Replace the previous standalone JAR in your mods folder.
+[Integration and validation details](docs/automation-sync-20261103.md).
+
 # 1.5.4 — Automation and Pit Classic update
 
 - Improve Pit Classic scoreboard/menu recognition and server-confirmed contract choices.

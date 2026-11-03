@@ -9,7 +9,7 @@ public final class ContractPerkPlan {
     }
 
     public static boolean gappleCooldownReady(long now,long lastSuccessfulDeath,long cooldown) {
-        return lastSuccessfulDeath==0 || now-lastSuccessfulDeath>=Math.max(12000,cooldown);
+        return lastSuccessfulDeath==0 || now-lastSuccessfulDeath>=Math.max(9000,cooldown);
     }
     public static boolean gappleOofReady(long now,long launch,long lastSuccessfulDeath,long delay,long cooldown,boolean airborne) {
         return airborne && launch>0 && now-launch>=delay && gappleCooldownReady(now,lastSuccessfulDeath,cooldown);

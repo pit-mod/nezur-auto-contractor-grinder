@@ -62,6 +62,19 @@ public final class ContractOffer {
         return ((daily && n.startsWith("Daily Quest:")) || (weekly && n.startsWith("Weekly Quest:")))
                 && strip(lore).toLowerCase(Locale.ROOT).contains("click to start this quest.");
     }
+    /** Opening an already-paid chooser is navigation, never another purchase. */
+    public static boolean isPendingChoice(String menu,String name){
+        return strip(menu).equalsIgnoreCase("Quests & Contracts")
+                &&strip(name).replaceFirst("\\.+$","").trim().equalsIgnoreCase("Pending choice");
+    }
+    /** The root button only opens the price confirmation; it does not buy anything. */
+    public static boolean isPurchasePreview(String menu,String name){
+        return strip(menu).equalsIgnoreCase("Quests & Contracts")&&strip(name).equalsIgnoreCase("Big Time Contract");
+    }
+    public static boolean isChoicePreview(String menu,String name){
+        return strip(menu).equalsIgnoreCase("Pick a contract!")
+                &&strip(name).matches("(?i)Choice\\s*#\\s*[123]");
+    }
     public static boolean dailyLimit(String text) {
         String s=strip(text);
         return s.equalsIgnoreCase("You already did all of the contracts you could do today!")

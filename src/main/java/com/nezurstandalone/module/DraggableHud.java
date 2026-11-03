@@ -32,6 +32,10 @@ public interface DraggableHud {
 
     int getHudHeight();
 
+    /** The editor placement box also determines whether two saved HUD columns overlap. */
+    default int getHudEditorWidth(){return 110;}
+
+
     default boolean isHudCenterAnchored() {
         return false;
     }
@@ -42,8 +46,8 @@ public interface DraggableHud {
     }
 
     default int getRenderY() {
-        return com.nezurstandalone.utils.HudBounds.clampY(
-                com.nezurstandalone.utils.HudStackManager.getStackedY(this), Math.max(1, getHudHeight()));
+        // The solver already handles screen edges. Clamping again can undo separation.
+        return com.nezurstandalone.utils.HudStackManager.getStackedY(this);
     }
 
     default boolean isStackedList() {

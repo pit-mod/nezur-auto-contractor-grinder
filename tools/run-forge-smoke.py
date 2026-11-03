@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import re
 
 root=Path(__file__).resolve().parents[1]
 build=root/'build/forge-smoke'
@@ -28,7 +29,11 @@ argfile=build/'javac.args'
 argfile.write_text('\n'.join('"'+a.replace('\\','/')+'"' for a in args),encoding='utf-8')
 subprocess.run([str(java/'javac.exe'),'@'+str(argfile)],check=True)
 game=build/'game';mods=game/'mods';mods.mkdir(parents=True,exist_ok=True)
-artifact=root/'build/libs/Nezur-AutoContractor-Grinder-1.5.4.jar'
+version=re.search(r'^version\s*=\s*"([^"]+)"',(root/'build.gradle').read_text(encoding='utf-8'),re.M).group(1)
+artifact=root/('build/libs/Nezur-AutoContractor-Grinder-'+version+'.jar')
+for stale in mods.glob('Nezur-AutoContractor-Grinder-*.jar'):
+    assert stale.resolve().parent==mods.resolve(), 'Smoke JAR cleanup escaped the build sandbox'
+    stale.unlink()
 shutil.copy2(artifact,mods/artifact.name)
 command=[str(java/'java.exe'),'-Dmixin.debug.export=true','-cp',';'.join([str(classes),*dependencies]),
          'net.minecraft.launchwrapper.Launch','--tweakClass','com.nezurtest.ForgeOnlyTweaker',
