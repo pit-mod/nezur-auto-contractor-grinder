@@ -1,3 +1,9 @@
+# 1.5.7 — AutoSprint
+
+- Add AutoSprint under Player. When enabled, it activates vanilla sprint while you hold forward.
+
+Minecraft Forge 1.8.9, Java 8.
+
 # 1.5.6 — Contract priorities and routing
 
 - Recognize triple and quadra kill contracts and add a dedicated Multi Kill toggle and ranking entry.

@@ -10,6 +10,17 @@ public final class MovementKeys {
     public static String walkerOwner(){return "walker";}
     public static void set(String owner,int key,boolean down){
         if(down&&!movementAllowed.getAsBoolean()){release(owner);return;}
+        setOwnedKey(owner,key,down);
+    }
+
+    /** Assist physical forward movement while keeping the normal world and correction checks. */
+    public static void holdManualSprint(String owner){
+        if(!AutomationSafety.allowed()){release(owner);return;}
+        int sprintKey=net.minecraft.client.Minecraft.getMinecraft().gameSettings.keyBindSprint.getKeyCode();
+        setOwnedKey(owner,sprintKey,true);
+    }
+
+    private static void setOwnedKey(String owner,int key,boolean down){
 
         if(key==net.minecraft.client.Minecraft.getMinecraft().gameSettings.keyBindJump.getKeyCode()){JumpController.request(owner,down);return;}
         net.minecraft.client.Minecraft mc=net.minecraft.client.Minecraft.getMinecraft();

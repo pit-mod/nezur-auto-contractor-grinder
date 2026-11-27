@@ -5,7 +5,10 @@ import com.nezurstandalone.utils.*;
 public class InitializationProbe {
  public static void main(String[] args)throws Exception{
   Nezur.moduleManager=new ModuleManager();
-  if(Nezur.moduleManager.getModules().size()!=8)throw new AssertionError("registry count");
+  if(Nezur.moduleManager.getModules().size()!=9)throw new AssertionError("registry count");
+  com.nezurstandalone.module.Module sprint=Nezur.moduleManager.getModuleByName("AutoSprint");
+  if(sprint==null||sprint.isToggled()||sprint.getCategory()!=com.nezurstandalone.module.Category.PLAYER)
+   throw new AssertionError("AutoSprint must be available under Player and off by default");
   for(com.nezurstandalone.module.Module m:Nezur.moduleManager.getModules()){
    if(m.getSettings().isEmpty())throw new AssertionError("settings "+m.getName());
    System.out.println("initialized="+m.getName()+" settings="+m.getSettings().size());
@@ -41,10 +44,10 @@ public class InitializationProbe {
   System.out.println("gui_constructor="+gui.getClass().getName());
   java.lang.reflect.Method snap=ConfigManager.class.getDeclaredMethod("moduleSnapshot");snap.setAccessible(true);
   com.google.gson.JsonObject config=(com.google.gson.JsonObject)snap.invoke(null);
-  if(config.entrySet().size()!=8)throw new AssertionError("serialized registry");
+  if(config.entrySet().size()!=9||!config.has("AutoSprint"))throw new AssertionError("serialized registry");
   String json=new com.google.gson.Gson().toJson(config);
-  if(new com.google.gson.JsonParser().parse(json).getAsJsonObject().entrySet().size()!=8)throw new AssertionError("config roundtrip");
-  System.out.println("config_module_roundtrip=8");
+  if(new com.google.gson.JsonParser().parse(json).getAsJsonObject().entrySet().size()!=9)throw new AssertionError("config roundtrip");
+  System.out.println("config_module_roundtrip=9");
   if(PresetCode.decode(ConfigPresets.DEFAULT_CONFIG_CODE).getAsJsonObject("modules").entrySet().size()!=8)throw new AssertionError("filtered defaults");
   System.out.println("preset_default_roundtrip=8");
  }

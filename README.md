@@ -1,3 +1,8 @@
+## Update — 1.5.7
+
+Enable **AutoSprint** under **Player** to sprint automatically while holding forward.
+AutoSprint is off by default.
+
 ## Update — 1.5.6
 
 AutoContractor adds a sortable contract priority list and Multi Kill support. This
@@ -89,7 +94,7 @@ This release includes the latest premium AutoGrinder and AutoContractor improvem
 - Physical mouse movement takes camera priority over automation.
 
 The free gold-contract recovery, sneak-hit cadence and Vile-only fallback are preserved.
-Download the latest 1.5.6 JAR from Releases below.
+Download the latest 1.5.7 JAR from Releases below.
 
 ## Startup crash hotfix — 1.5.1
 
@@ -97,7 +102,7 @@ If 1.5 crashes with `IMixinService` missing, **replace the old JAR with 1.5.1**.
 
 ## Download and install
 
-1. Download **Nezur-AutoContractor-Grinder-1.5.6.jar** from [Releases](https://github.com/pit-mod/nezur-auto-contractor-grinder/releases/latest).
+1. Download **Nezur-AutoContractor-Grinder-1.5.7.jar** from [Releases](https://github.com/pit-mod/nezur-auto-contractor-grinder/releases/latest).
 2. Install Minecraft **Forge 1.8.9**.
 3. Put the JAR in the Minecraft instance's `mods` folder. Remove older standalone copies, then restart Minecraft.
 4. Press **Right Shift** to open the module menu.
