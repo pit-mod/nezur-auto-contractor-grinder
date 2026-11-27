@@ -19,6 +19,7 @@ public final class CombatOptions {
     public final ModeSetting sort = mode("KillAura Target Sort","Health","Distance","Health","Hurt Time","FOV","Smart");
     public final BooleanSetting teams = flag("KillAura Team Check",false);
     public final BooleanSetting botCheck = flag("KillAura Bot Check",true);
+    public final BooleanSetting showTarget = flag("Show Target",true);
     public final NumberSetting legacyMin=legacyNumber("CPS Min",8,1,14,0),legacyMax=legacyNumber("CPS Max",12,1,14,0),
             legacyRange=legacyNumber("Attack Reach",3,1,3,1),legacySpeed=legacyNumber("Combat Aim Speed",15,5,30,1);
     public final BooleanSetting legacyTeams=new BooleanSetting("Team Check (TDM)",true){@Override public boolean isVisible(){return !useKillAura.enabled;}};
@@ -30,7 +31,7 @@ public final class CombatOptions {
 
     public CombatOptions(){
         preset.addChangeListener(s->{if(!Setting.isRestoring())applyPreset(preset.getMode());});
-        for(Setting setting:settings())if(setting!=preset&&setting!=useKillAura)
+        for(Setting setting:settings())if(setting!=preset&&setting!=useKillAura&&setting!=showTarget)
             setting.addChangeListener(s->{if(!applying&&!Setting.isRestoring())preset.setMode("Custom");});
     }
     private NumberSetting number(String name,double value,double min,double max,int decimals){
@@ -49,7 +50,7 @@ public final class CombatOptions {
     public double maxCps(){return useKillAura.enabled?cpsMax.value:legacyMax.value;}
     public double range(){return useKillAura.enabled?attackRange.value:legacyRange.value;}
     public double speed(){return useKillAura.enabled?rotationSpeed.value:legacySpeed.value;}
-    public Setting[] settings(){return new Setting[]{useKillAura,preset,mode,sort,cpsMin,cpsMax,attackRange,targetRange,rotationSpeed,fov,switchDelay,teams,botCheck,legacyMin,legacyMax,legacyRange,legacySpeed,legacyTeams,ttkSpeed,ttkInterval,ttkDamage,ttkSwitch,ttkDebug,legacyHealth};}
+    public Setting[] settings(){return new Setting[]{useKillAura,preset,mode,sort,cpsMin,cpsMax,attackRange,targetRange,rotationSpeed,fov,switchDelay,teams,botCheck,showTarget,legacyMin,legacyMax,legacyRange,legacySpeed,legacyTeams,ttkSpeed,ttkInterval,ttkDamage,ttkSwitch,ttkDebug,legacyHealth};}
     /** Profiles tune scheduling/selection, never extend native attack reach or bypass validation. */
     public void applyPreset(String name){
         if("Custom".equals(name))return;

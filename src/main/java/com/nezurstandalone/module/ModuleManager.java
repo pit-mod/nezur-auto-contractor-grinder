@@ -17,6 +17,7 @@ public class ModuleManager {
         addModule(new com.nezurstandalone.module.impl.player.AutoSprint());
         addModule(new com.nezurstandalone.module.impl.player.Pathfinder());
         addModule(new com.nezurstandalone.module.impl.render.ClickGuiSettings());
+        addModule(new com.nezurstandalone.module.impl.render.Events());
         addModule(new com.nezurstandalone.module.impl.render.Focus());
         addModule(new com.nezurstandalone.module.impl.render.HUD());
     }

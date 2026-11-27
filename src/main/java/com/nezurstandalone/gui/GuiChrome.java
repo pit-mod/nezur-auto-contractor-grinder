@@ -1,7 +1,9 @@
 package com.nezurstandalone.gui;
 
-import com.nezurstandalone.Nezur;
 import com.nezurstandalone.gui.hud.HudEditorScreen;
+import com.nezurstandalone.gui.physics.PhysicsSpring;
+import com.nezurstandalone.module.impl.render.ClickGuiSettings;
+import com.nezurstandalone.utils.ScreenScale;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
 import org.lwjgl.input.Keyboard;
@@ -34,17 +36,18 @@ public final class GuiChrome {
     }
 
     public static final int TOPBAR_Y = 8;
-    public static final int TOPBAR_H = 15;
+    public static final int TOPBAR_H = 34;
+    private static final int TOPBAR_W = 228;
+    private static final int SEARCH_H = 18;
+    private static final int SIDE_SEARCH_MIN_WIDTH = 460;
     public static final int SEARCH_W = 150;
 
     private static final Tab[] TABS = Tab.values();
 
     private final Tab active;
     private final String placeholder;
-    private float barScale=1f;
 
     private final float[] chipHover = new float[TABS.length];
-    private final float[] chipPress = new float[TABS.length];
     private final int[] chipX = new int[TABS.length];
     private final int[] chipW = new int[TABS.length];
 
@@ -67,9 +70,8 @@ public final class GuiChrome {
      * because each screen is a separate instance - this is the only thing that crosses.
      */
     private static Tab navFrom;
-    /** {@link #navFrom} claimed by this instance; see the constructor. */
-    private final Tab arriveFrom;
-    private float underlineT;
+    private final PhysicsSpring lens;
+    private final PhysicsSpring press = new PhysicsSpring(0, 500, 28);
 
     private final TextInputHelper searchEditor = new TextInputHelper();
     private String query = "";
@@ -78,7 +80,7 @@ public final class GuiChrome {
     private boolean typing;
     private float searchHover;
     private float searchFocus;
-    private int searchFieldX;
+    private int searchFieldX, searchFieldY, searchWidth;
 
     private float actionHover;
     private int actionX, actionY, actionW, actionH;
@@ -108,25 +110,9 @@ public final class GuiChrome {
         // Claimed once and cleared, so only the screen the handover was meant for plays the
         // arrival. Left set, a menu opened fresh hours later would slide its accent in from
         // whatever tab happened to be visited last.
-        this.arriveFrom = navFrom;
+        Tab arriveFrom = navFrom;
         navFrom = null;
-    }
-
-    private static int indexOf(Tab tab) {
-        for (int i = 0; i < TABS.length; i++) {
-            if (TABS[i] == tab) {
-                return i;
-            }
-        }
-        return 0;
-    }
-
-    private float chipCenter(int index) {
-        return chipX[index] + chipW[index] / 2f;
-    }
-
-    private static float lerp(float from, float to, float t) {
-        return from + (to - from) * GuiAnim.clamp01(t);
+        lens = new PhysicsSpring(arriveFrom == null ? active.ordinal() : arriveFrom.ordinal(), 650, 32);
     }
 
     // -------------------------------------------------------------------- state
@@ -216,143 +202,130 @@ public final class GuiChrome {
         return GuiIntro.forTab(active);
     }
 
+    public static int contentTop(int screenWidth) {
+        int navigationBottom = TOPBAR_Y + TOPBAR_H;
+        if (screenWidth < SIDE_SEARCH_MIN_WIDTH) navigationBottom += 6 + SEARCH_H;
+        return Math.max(GuiTheme.PANEL_TOP, navigationBottom + 8);
+    }
+
     public void drawTopBar(int mouseX, int mouseY, float delta, float appear) {
-        float natural=GuiTheme.PANEL_LEFT+GuiDraw.textWidthScaled("nezur",1.35f)+5
-                +GuiDraw.textWidthScaled("v"+Nezur.VERSION+" · 1.8.9",0.7f)+12+SEARCH_W+8;
-        for(Tab tab:TABS) natural+=GuiDraw.textWidth(tab.label)+21;
-        barScale=Math.min(1f,Math.max(0.1f,(com.nezurstandalone.utils.ScreenScale.get().getScaledWidth()-8f)/natural));
-        mouseX=(int)(mouseX/barScale);mouseY=(int)(mouseY/barScale);
-        GuiDraw.pushScale(0,0,barScale,barScale);
-        float[] offset = GuiIntro.barOffset(introStyle(), appear);
-        GuiDraw.pushTranslate(offset[0], offset[1]);
+        int width = ScreenScale.get().getScaledWidth();
+        int navWidth = Math.max(TABS.length, Math.min(TOPBAR_W, width - 16));
+        int navX = (width - navWidth) / 2;
+        float navY = TOPBAR_Y;
+        float segment = navWidth / (float) TABS.length;
 
-        float logoScale = 1.35f;
-        float logoX = GuiTheme.PANEL_LEFT;
-        float logoY = TOPBAR_Y + (TOPBAR_H - 8f * logoScale) / 2f;
-        GuiDraw.textScaled("nezur", logoX, logoY, logoScale, GuiDraw.withAlpha(GuiTheme.TEXT, appear), false);
-        float logoW = GuiDraw.textWidthScaled("nezur", logoScale);
+        boolean sideSearch = width >= SIDE_SEARCH_MIN_WIDTH;
+        if (sideSearch) {
+            searchFieldX = navX + navWidth + 8;
+            searchWidth = Math.min(SEARCH_W, width - searchFieldX - 8);
+            searchFieldY = TOPBAR_Y + (TOPBAR_H - SEARCH_H) / 2;
+        } else {
+            searchWidth = Math.min(SEARCH_W, Math.max(1, width - 16));
+            searchFieldX = (width - searchWidth) / 2;
+            searchFieldY = TOPBAR_Y + TOPBAR_H + 6;
+        }
 
-        String version = "v" + Nezur.VERSION + " · 1.8.9";
-        float verScale = 0.7f;
-        float verX = logoX + logoW + 5f;
-        GuiDraw.textScaled(version, verX, TOPBAR_Y + TOPBAR_H - 8f * verScale - 2f, verScale,
-                GuiDraw.withAlpha(GuiTheme.TEXT_FAINT, appear), false);
+        Tab selected = pendingTab == null ? active : pendingTab;
+        lens.setTarget(selected.ordinal());
+        press.setTarget(pendingTab == null ? 0 : 1);
+        if (ClickGuiSettings.animationsOn()) {
+            float dt = delta * ClickGuiSettings.animationSpeed();
+            lens.update(dt);
+            press.update(dt);
+        } else {
+            lens.snapTo(selected.ordinal());
+            press.snapTo(0);
+        }
 
-        int searchX = (int) (verX + GuiDraw.textWidthScaled(version, verScale) + 12f);
-        drawSearchField(searchX, mouseX, mouseY, delta, appear);
+        float captureX = navX - segment;
+        float captureY = Math.max(0, navY - TOPBAR_H);
+        float captureWidth = navWidth + segment * 2;
+        NavigationLens.capture(captureX, captureY, captureWidth, TOPBAR_H * 3);
+        GuiDraw.shadow(navX, navY, navX + navWidth, navY + TOPBAR_H, TOPBAR_H / 2f, 5, (int) (55 * appear));
+        if (!NavigationLens.drawBackdrop(navX, navY, navWidth, TOPBAR_H, appear, GuiTheme.GLASS_BODY)) {
+            GuiDraw.glass(navX, navY, navX + navWidth, navY + TOPBAR_H, TOPBAR_H / 2f,
+                    GuiTheme.GLASS_BODY, GuiTheme.GLASS_BORDER, .7f, appear);
+        }
 
-        int cx = searchX + SEARCH_W + 8;
+        float held = GuiAnim.clamp01(press.getCurrentValue());
+        float lensWidth = Math.max(1, segment - 5 + held * 5);
+        float lensHeight = TOPBAR_H - 4 + held * 4;
+        float center = navX + (lens.getCurrentValue() + .5f) * segment;
+        float lensX = Math.max(navX - 3, Math.min(navX + navWidth + 3 - lensWidth, center - lensWidth / 2));
+        float lensY = navY + (TOPBAR_H - lensHeight) / 2;
+
         for (int i = 0; i < TABS.length; i++) {
-            boolean isActive = TABS[i] == active;
-            int w = GuiDraw.textWidth(TABS[i].label) + 16;
-            chipX[i] = cx;
-            chipW[i] = w;
-            boolean hovered = !isActive && inside(mouseX, mouseY, cx, TOPBAR_Y, w, TOPBAR_H);
+            chipX[i] = Math.round(navX + i * segment);
+            chipW[i] = Math.round(navX + (i + 1) * segment) - chipX[i];
+            boolean hovered = inside(mouseX, mouseY, chipX[i], TOPBAR_Y, chipW[i], TOPBAR_H);
             chipHover[i] = GuiDraw.approach(chipHover[i], hovered ? 1f : 0f, 16f, delta);
-
-            // The clicked chip sinks and stays down for as long as the navigation is held,
-            // so the press and the screen change read as one gesture.
-            boolean held = pendingTab == TABS[i];
-            chipPress[i] = GuiDraw.approach(chipPress[i], held ? 1f : 0f, 26f, delta);
-
-            // Chips pop in from the side the screen itself arrives from, so the bar and the
-            // content agree about which way this destination came in.
-            int order = introStyle() == GuiIntro.Style.SWEEP ? TABS.length - 1 - i : i;
-            float chipT = GuiAnim.outBack(GuiAnim.stagger(appear, order, TABS.length, 0.55f));
-            float sink = 1f - 0.055f * chipPress[i];
-            GuiDraw.pushScale(cx + w / 2f, TOPBAR_Y + TOPBAR_H / 2f, chipT * sink, chipT * sink);
-            drawChip(TABS[i].label, cx, TOPBAR_Y, w, TOPBAR_H,
-                    chipHover[i], chipPress[i], isActive, appear);
-            GuiDraw.popMatrix();
-            cx += w + 5;
         }
 
-        drawUnderline(delta, appear);
-        GuiDraw.popMatrix();
-        GuiDraw.popMatrix();
+        drawNavLabels(navX, navY, segment, selected, appear);
+        NavigationLens.capture(captureX, captureY, captureWidth, TOPBAR_H * 3);
+        GuiDraw.shadow(lensX, lensY, lensX + lensWidth, lensY + lensHeight, lensHeight / 2, 3,
+                (int) ((20 + held * 30) * appear));
+        if (!NavigationLens.draw(lensX, lensY, lensWidth, lensHeight, 1.015f + held * .045f, held, appear)) {
+            GuiDraw.roundedRect(lensX, lensY, lensX + lensWidth, lensY + lensHeight, lensHeight / 2,
+                    GuiDraw.withAlpha(GuiTheme.ROW_BG_SELECTED, appear));
+            drawNavLabels(navX, navY, segment, selected, appear);
+        }
+
+        if (sideSearch || searchFieldX > 58) {
+            GuiDraw.textScaled("nezur", 10, searchFieldY + 4, 1.15f, GuiDraw.withAlpha(GuiTheme.TEXT, appear), false);
+        }
+        drawSearchField(searchFieldX, mouseX, mouseY, delta, appear);
     }
 
-    /**
-     * The accent underline, drawn once outside the chip loop so it can sit between two chips
-     * mid-travel. Drawing it inside {@code drawChip} pinned it to whichever chip happened to
-     * be active, which is why switching screens snapped the accent across instead of moving it.
-     */
-    private void drawUnderline(float delta, float appear) {
-        int activeIdx = indexOf(active);
-        int fromIdx = arriveFrom == null ? activeIdx : indexOf(arriveFrom);
-
-        underlineT = GuiDraw.approach(underlineT, 1f, 9f, delta);
-        float arrive = GuiAnim.outCubic(underlineT);
-        float centre = lerp(chipCenter(fromIdx), chipCenter(activeIdx), arrive);
-        float barW = lerp(chipW[fromIdx], chipW[activeIdx], arrive) * 0.46f;
-
-        // A click sends the underline off toward its target straight away; this screen plays
-        // the departure and the next one picks the same travel up from where it left off.
-        if (pendingTab != null) {
-            int toIdx = indexOf(pendingTab);
-            float leave = GuiAnim.outCubic(GuiAnim.clamp01(
-                    (GuiAnim.millis() - pendingSinceMs) / (float) NAV_DELAY_MS));
-            centre = lerp(centre, chipCenter(toIdx), leave);
-            barW = lerp(barW, chipW[toIdx] * 0.46f, leave);
+    private void drawNavLabels(float x, float y, float segment, Tab selected, float appear) {
+        for (int i = 0; i < TABS.length; i++) {
+            float center = x + (i + .5f) * segment;
+            int color = TABS[i] == selected ? GuiTheme.ACCENT
+                    : GuiDraw.lerpColor(GuiTheme.TEXT_DIM, GuiTheme.TEXT, chipHover[i]);
+            int textColor = GuiDraw.withAlpha(color, appear);
+            NavigationIcons.draw(i, center, y + 11, 13, textColor);
+            String label = TABS[i].label;
+            float scale = Math.min(.85f, (segment - 5) / Math.max(1, GuiDraw.textWidth(label)));
+            GuiDraw.textScaled(label, center - GuiDraw.textWidthScaled(label, scale) / 2,
+                    y + TOPBAR_H - 11, scale, textColor, false);
         }
-
-        float y = TOPBAR_Y + TOPBAR_H;
-        GuiDraw.roundedRect(centre - barW / 2f, y - 2.4f, centre + barW / 2f, y - 1f, 0.7f,
-                GuiDraw.withAlpha(GuiTheme.ACCENT, appear));
-    }
-
-    private static void drawChip(String label, int x, int y, int w, int h,
-                                 float hover, float press, boolean isActive, float appear) {
-        int bg = GuiDraw.lerpColor(GuiTheme.GLASS_CHIP, GuiTheme.CHIP_BG_HOVER, hover * 0.75f);
-        int border = GuiDraw.lerpColor(GuiTheme.GLASS_BORDER, GuiTheme.ACCENT_MUTED, hover);
-        if (isActive) {
-            bg = tinted(GuiTheme.CHIP_BG_HOVER, GuiTheme.ACCENT, 0.22f);
-            border = GuiTheme.ACCENT_MUTED;
-        }
-        // A pressed chip loses its sheen: the surface reads as pushed below the bar rather
-        // than catching light off the top edge.
-        float gloss = (isActive ? 0.75f : 0.55f + 0.35f * hover) * (1f - 0.8f * press);
-        GuiDraw.glass(x, y, x + w, y + h, 3f, bg, border, gloss, appear);
-
-        int text = isActive ? GuiTheme.TEXT : GuiDraw.lerpColor(GuiTheme.TEXT_DIM, GuiTheme.TEXT, hover);
-        GuiDraw.text(label, x + (w - GuiDraw.textWidth(label)) / 2f, y + (h - 8) / 2f + 0.5f,
-                GuiDraw.withAlpha(text, appear));
     }
 
     private void drawSearchField(int x, int mouseX, int mouseY, float delta, float appear) {
         searchFieldX = x;
-        boolean hovered = inside(mouseX, mouseY, x, TOPBAR_Y, SEARCH_W, TOPBAR_H);
+        boolean hovered = inside(mouseX, mouseY, x, searchFieldY, searchWidth, SEARCH_H);
         searchHover = GuiDraw.approach(searchHover, hovered ? 1f : 0f, 16f, delta);
         searchFocus = GuiDraw.approach(searchFocus, typing ? 1f : 0f, 16f, delta);
 
-        inputField(x, TOPBAR_Y, SEARCH_W, TOPBAR_H, searchHover, searchFocus, appear);
+        inputField(x, searchFieldY, searchWidth, SEARCH_H, searchHover, searchFocus, appear);
 
         float iconCx = x + 9f;
-        float iconCy = TOPBAR_Y + TOPBAR_H / 2f - 0.5f;
+        float iconCy = searchFieldY + SEARCH_H / 2f - 0.5f;
         int iconColor = GuiDraw.lerpColor(GuiTheme.TEXT_FAINT, GuiTheme.TEXT_DIM, Math.max(searchHover, searchFocus));
         GuiDraw.searchIcon(iconCx, iconCy, 3.1f, GuiDraw.withAlpha(iconColor, appear));
 
         int textX = x + 17;
-        int textY = TOPBAR_Y + (TOPBAR_H - 8) / 2 + 1;
+        int textY = searchFieldY + (SEARCH_H - 8) / 2 + 1;
         boolean hasQuery = query != null && !query.isEmpty();
 
         if (typing) {
-            searchEditor.drawWithin(GuiDraw.font(), textX, textY, GuiDraw.withAlpha(GuiTheme.TEXT, appear), true, SEARCH_W-30);
+            searchEditor.drawWithin(GuiDraw.font(), textX, textY, GuiDraw.withAlpha(GuiTheme.TEXT, appear), true, searchWidth-30);
         } else if (hasQuery) {
-            GuiDraw.textFitScaled(query, textX, textY, 1f, SEARCH_W - 30,
+            GuiDraw.textFitScaled(query, textX, textY, 1f, searchWidth - 30,
                     GuiDraw.withAlpha(GuiTheme.TEXT, appear), false);
         } else {
-            GuiDraw.textFitScaled(placeholder, textX, textY, 1f, SEARCH_W - 30,
+            GuiDraw.textFitScaled(placeholder, textX, textY, 1f, searchWidth - 30,
                     GuiDraw.withAlpha(GuiTheme.TEXT_FAINT, appear), false);
         }
 
         if (hasQuery) {
-            float cx = x + SEARCH_W - 8f;
+            float cx = x + searchWidth - 8f;
             boolean clearHov = Math.abs(mouseX + 0.5f - cx) <= 5f
-                    && Math.abs(mouseY + 0.5f - (TOPBAR_Y + TOPBAR_H / 2f)) <= 6f;
+                    && Math.abs(mouseY + 0.5f - (searchFieldY + SEARCH_H / 2f)) <= 6f;
             int col = GuiDraw.withAlpha(clearHov ? GuiTheme.DANGER : GuiTheme.TEXT_FAINT, appear);
             float r = 2.4f;
-            float cy = TOPBAR_Y + TOPBAR_H / 2f;
+            float cy = searchFieldY + SEARCH_H / 2f;
             GuiDraw.line(cx - r, cy - r, cx + r, cy + r, 1.2f, col);
             GuiDraw.line(cx + r, cy - r, cx - r, cy + r, 1.2f, col);
         }
@@ -418,8 +391,7 @@ public final class GuiChrome {
      * @return true when the click landed on the bar and the screen should stop processing it
      */
     public boolean mouseClicked(int mouseX, int mouseY, int mouseButton, Minecraft mc, FontRenderer fr) {
-        mouseX=(int)(mouseX/barScale);mouseY=(int)(mouseY/barScale);
-        if (mouseButton != 0 || mouseY < TOPBAR_Y || mouseY >= TOPBAR_Y + TOPBAR_H) {
+        if (mouseButton != 0) {
             return false;
         }
 
@@ -433,9 +405,9 @@ public final class GuiChrome {
             return true;
         }
 
-        if (inside(mouseX, mouseY, searchFieldX, TOPBAR_Y, SEARCH_W, TOPBAR_H)) {
+        if (inside(mouseX, mouseY, searchFieldX, searchFieldY, searchWidth, SEARCH_H)) {
             boolean hasQuery = query != null && !query.isEmpty();
-            if (hasQuery && mouseX >= searchFieldX + SEARCH_W - 14) {
+            if (hasQuery && mouseX >= searchFieldX + searchWidth - 14) {
                 applyQuery("");
                 searchEditor.setText("");
                 typing = false;
@@ -449,7 +421,6 @@ public final class GuiChrome {
     }
 
     public void mouseClickMove(int mouseX, int button, FontRenderer fr) {
-        mouseX=(int)(mouseX/barScale);
         if (typing && button == 0) {
             searchEditor.updateMouseSelection(mouseX, searchFieldX + 17, fr);
         }

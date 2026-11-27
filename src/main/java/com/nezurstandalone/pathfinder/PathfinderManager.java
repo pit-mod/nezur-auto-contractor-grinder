@@ -37,6 +37,7 @@ import java.util.function.Predicate;
  * so every reader sees a consistent pair.
  */
 public final class PathfinderManager {
+    public interface RoutePreference { boolean useRoniRoutes(); }
     public static java.util.function.BooleanSupplier movementAllowed = () -> true;
     public static java.util.function.BooleanSupplier navigationAllowed = () -> true;
     public static boolean ownsMovement(){return NAVIGATION.get().walk || AutoWalker.INSTANCE.isActive();}
@@ -140,12 +141,8 @@ public final class PathfinderManager {
     private static void prepareStep() {
         if (preparing == null) return;
         try {
-            // 16384 cells per tick: the capture is the bottleneck on long searches (the search
-            // itself is off-thread), and at the old 4096 a spawn-to-camp box needed seven or
-            // more seconds of preparation before compute() could even start — usually past the
-            // caller's repath/timeout. Air cells now cost a map insert instead of a full
-            // collision sweep, so this budget is comfortably inside the frame.
-            if (preparing.prepare(16384)) {
+            // The compact snapshot also caps capture time per client tick.
+            if (preparing.prepare(65536)) {
                 Runnable launch = launchPrepared; preparing = null; launchPrepared = null; launch.run();
             }
         } catch (RuntimeException error) {
@@ -413,7 +410,11 @@ public final class PathfinderManager {
 
         EXECUTOR.purge(); // Remove cancelled searches before accepting the latest request.
         final AStarPathfinder pathfinder;
-        try { pathfinder = new AStarPathfinder(requestWorld, startPos, endPos, iterationLimit, true, bounds); }
+        try {
+            pathfinder = owner instanceof RoutePreference && ((RoutePreference) owner).useRoniRoutes()
+                    ? new RoniPathfinder(requestWorld, startPos, endPos, iterationLimit, true, bounds)
+                    : new AStarPathfinder(requestWorld, startPos, endPos, iterationLimit, true, bounds);
+        }
         catch (RuntimeException failure) {
             cancelInternal(true); state=State.FAILED; outcome=Outcome.ERROR;
             System.out.println("[Nezur] Path search setup failed for " + endPos.getX() + ", " + endPos.getY()

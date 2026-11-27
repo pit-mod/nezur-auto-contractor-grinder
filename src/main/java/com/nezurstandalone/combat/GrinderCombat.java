@@ -137,6 +137,11 @@ public final class GrinderCombat {
         if(target!=null&&valid(target,killAura?options.targetRange.value:30))return target;
         return Clock.millis()<walkingUntil&&walkingTarget!=null&&valid(walkingTarget,30)?walkingTarget:null;
     }
+    public EntityPlayer getIndicatorTarget() {
+        return killAura && options == settings.get() && options.useKillAura.enabled
+                && options.showTarget.enabled && mayTrack() ? target : null;
+    }
+
     public CombatAura.Stage getStage(){return driver().getStage();}
     public void onRenderFrame(){drive(false);}
     private void drive(boolean nativeInput){

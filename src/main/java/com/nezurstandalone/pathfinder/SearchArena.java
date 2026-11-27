@@ -31,6 +31,8 @@ final class SearchArena {
     private double[] nodeG;
     private double[] nodeF;
     private int[] nodeParent;
+    private int[] heapPosition;
+    private double[] nodeTie;
     private int nodeCount;
 
     // --- binary heap over node indices, ordered by nodeF ---------------------
@@ -65,6 +67,8 @@ final class SearchArena {
         nodeG = new double[INITIAL_NODES];
         nodeF = new double[INITIAL_NODES];
         nodeParent = new int[INITIAL_NODES];
+        heapPosition = new int[INITIAL_NODES];
+        nodeTie = new double[INITIAL_NODES];
         heap = new int[INITIAL_NODES];
 
         allocOpen(INITIAL_TABLE);
@@ -101,6 +105,8 @@ final class SearchArena {
         nodeG[idx] = g;
         nodeF[idx] = f;
         nodeParent[idx] = parent;
+        heapPosition[idx] = -1;
+        nodeTie[idx] = 0;
         return idx;
     }
 
@@ -110,13 +116,14 @@ final class SearchArena {
     long nodeKey(int idx) { return nodeKey[idx]; }
     double nodeG(int idx) { return nodeG[idx]; }
     int nodeParent(int idx) { return nodeParent[idx]; }
+    void tie(int idx,double value){nodeTie[idx]=value;}
 
     /** Relaxes an existing node onto a cheaper route and re-orders it in the heap. */
     void improve(int idx, double g, double f, int parent) {
         nodeG[idx] = g;
         nodeF[idx] = f;
         nodeParent[idx] = parent;
-        int at = heapIndexOf(idx);
+        int at = heapPosition[idx];
         if (at >= 0) {
             siftUp(at);
         } else {
@@ -133,6 +140,8 @@ final class SearchArena {
         nodeG = java.util.Arrays.copyOf(nodeG, size);
         nodeF = java.util.Arrays.copyOf(nodeF, size);
         nodeParent = java.util.Arrays.copyOf(nodeParent, size);
+        heapPosition = java.util.Arrays.copyOf(heapPosition, size);
+        nodeTie = java.util.Arrays.copyOf(nodeTie, size);
     }
 
     // ------------------------------------------------------------------- heap
@@ -146,60 +155,61 @@ final class SearchArena {
             heap = java.util.Arrays.copyOf(heap, heap.length << 1);
         }
         heap[heapSize] = nodeIdx;
+        heapPosition[nodeIdx] = heapSize;
         siftUp(heapSize++);
     }
 
     int heapPop() {
         int top = heap[0];
         heap[0] = heap[--heapSize];
+        heapPosition[top] = -1;
         if (heapSize > 0) {
+            heapPosition[heap[0]] = 0;
             siftDown(0);
         }
         return top;
     }
 
-    private int heapIndexOf(int nodeIdx) {
-        // Linear, but only reached when a node is relaxed onto a cheaper route, which is a
-        // small fraction of expansions; a full index map would cost more than it saves.
-        for (int i = 0; i < heapSize; i++) {
-            if (heap[i] == nodeIdx) {
-                return i;
-            }
-        }
-        return -1;
+    private boolean less(int a,int b) {
+        int order=Double.compare(nodeF[a],nodeF[b]);
+        if(order==0)order=Double.compare(nodeTie[a],nodeTie[b]);
+        if(order==0)order=Double.compare(nodeG[b],nodeG[a]);
+        return order<0 || order==0&&a<b;
     }
 
     private void siftUp(int i) {
         int node = heap[i];
-        double f = nodeF[node];
         while (i > 0) {
             int parent = (i - 1) >>> 1;
-            if (f >= nodeF[heap[parent]]) {
+            if (!less(node,heap[parent])) {
                 break;
             }
             heap[i] = heap[parent];
+            heapPosition[heap[i]]=i;
             i = parent;
         }
         heap[i] = node;
+        heapPosition[node]=i;
     }
 
     private void siftDown(int i) {
         int node = heap[i];
-        double f = nodeF[node];
         int half = heapSize >>> 1;
         while (i < half) {
             int child = (i << 1) + 1;
             int right = child + 1;
-            if (right < heapSize && nodeF[heap[right]] < nodeF[heap[child]]) {
+            if (right < heapSize && less(heap[right],heap[child])) {
                 child = right;
             }
-            if (nodeF[heap[child]] >= f) {
+            if (!less(heap[child],node)) {
                 break;
             }
             heap[i] = heap[child];
+            heapPosition[heap[i]]=i;
             i = child;
         }
         heap[i] = node;
+        heapPosition[node]=i;
     }
 
     // --------------------------------------------------------------- open set

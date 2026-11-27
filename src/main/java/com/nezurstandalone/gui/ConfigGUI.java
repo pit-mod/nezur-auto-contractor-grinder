@@ -127,7 +127,7 @@ public class ConfigGUI extends GuiScreen {
 
         cardW = Math.min(CARD_MAX_W, Math.max(200, width - GuiTheme.PANEL_LEFT * 2));
         cardX = (width - cardW) / 2;
-        cardY = GuiTheme.PANEL_TOP;
+        cardY = GuiChrome.contentTop(width);
 
         toolbarY = cardY + GuiTheme.HEADER_H + 6;
         saveW = (int) GuiChrome.buttonWidth("+ Save", TOOLBAR_H);

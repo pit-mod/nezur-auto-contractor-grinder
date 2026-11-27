@@ -18,10 +18,10 @@ import java.util.List;
 /**
  * The route search.
  *
- * <p>The cost model, the heuristic (including its anti-bridge repulsion field), the movement
- * validation and the 26-way expansion are unchanged from the original — every constant and
- * every acceptance rule is identical, and a route computed here is the same route as before.
- * What changed is everything underneath: the search runs out of a reusable {@link SearchArena}
+ * <p>The cost model, heuristic and 26-way expansion retain their configured behavior.
+ * Fully supported level corridors can bypass A*, and validated flat shortcuts remove grid
+ * detours after search. Steps and drops retain their original movement transitions.
+ * The search runs out of a reusable {@link SearchArena}
  * instead of allocating {@code BlockPos}, {@code Node}, {@code ArrayList} and boxed map
  * entries per candidate, and the per-expansion work is ordered so the cheap rejections happen
  * before the expensive geometry.
@@ -79,9 +79,12 @@ public class AStarPathfinder {
     private final double cfg_wallClearance = PathfinderConfig.wallClearance.value;
     private final boolean cfg_avoidHoles = PathfinderConfig.avoidHoles.enabled;
     public boolean captureValid(){return snapshot.valid();}
+    protected final SearchSnapshot collisionSnapshot(){return snapshot;}
     public boolean prepare(int budget) { return snapshot.prepare(budget); }
     private SearchArena arena;
     private boolean partial;
+    private double searchCost;
+    double searchCost(){return searchCost;}
 
     public AStarPathfinder(BlockPos start, BlockPos end, int maxIterations, boolean avoidHoles) {
         this(start, end, maxIterations, avoidHoles, null);
@@ -122,9 +125,17 @@ public class AStarPathfinder {
         final int endY = end.getY();
         final int endZ = end.getZ();
 
-        int startNode = arena.newNode(pack(start.getX(), start.getY(), start.getZ()),
+        if(maxIterations>0 && !Thread.currentThread().isInterrupted()) {
+            List<Vec3> direct=snapshot.directPath(
+                    new Vec3(start.getX()+.5,walkableHeight(start.getX(),start.getY(),start.getZ()),start.getZ()+.5),
+                    new Vec3(endX+.5,walkableHeight(endX,endY,endZ),endZ+.5));
+            if(direct!=null){partial=false;searchCost=direct.get(0).distanceTo(direct.get(direct.size()-1));return direct;}
+        }
+
+        int startNode = arena.newNode(snapshot.stateKey(start.getX(),start.getY(),start.getZ(),0,0),
                 start.getX(), start.getY(), start.getZ(),
                 0.0, heuristic(start.getX(), start.getY(), start.getZ(), endX, endY, endZ), -1);
+        arena.tie(startNode,bridgeTie(start.getX(),start.getY(),start.getZ(),endX,endY,endZ));
         arena.heapPush(startNode);
         arena.openPut(arena.nodeKey(startNode), startNode);
 
@@ -195,8 +206,11 @@ public class AStarPathfinder {
                     if (landingY == NO_LANDING) {
                         continue;
                     }
+                    // A vertical probe that lands back in this cell is not a movement.
+                    // Treating it as one erased heading and made every turn artificially free.
+                    if(nx==cx&&landingY==cy&&nz==cz)continue;
 
-                    final long landingKey = pack(nx, landingY, nz);
+                    final long landingKey = snapshot.stateKey(nx,landingY,nz,dir[0],dir[2]);
                     if (arena.closedContains(landingKey)) {
                         continue;
                     }
@@ -205,9 +219,8 @@ public class AStarPathfinder {
                     if (!snapshot.loaded(scratch)) {
                         continue;
                     }
-                    if (!snapshot.allowed(new BlockPos(nx, landingY, nz))) {
-                        // The only unavoidable allocation in the loop: the predicate is public
-                        // API and callers keep the reference (blacklist sets, zone tests).
+                    if (!snapshot.allowed(scratch)) {
+                        // Bounds were already evaluated into immutable snapshot cells.
                         continue;
                     }
 
@@ -233,7 +246,9 @@ public class AStarPathfinder {
                         stepCost += -vDrop * cfg_jumpCost;
                     }
 
-                    double cost = currentG + stepCost;
+                    boolean ladder=hDist==0 && (snapshot.climb(new BlockPos(cx,cy,cz))||snapshot.climb(scratch));
+                    double movement=TravelCost.movement(hDist,walkableHeight(nx,landingY,nz)-startY,ladder,cfg_stepAssist);
+                    double cost = currentG + Math.max(stepCost,movement+turnPenalty);
 
                     if (cfg_avoidHoles && isHole(nx, landingY, nz)) {
                         cost += cfg_holePenalty;
@@ -256,6 +271,7 @@ public class AStarPathfinder {
                         int node = arena.newNode(landingKey, nx, landingY, nz, cost,
                                 cost + heuristic(nx, landingY, nz, endX, endY, endZ), current);
                         arena.openPut(landingKey, node);
+                        arena.tie(node,bridgeTie(nx,landingY,nz,endX,endY,endZ));
                         arena.heapPush(node);
                     }
                 }
@@ -265,6 +281,7 @@ public class AStarPathfinder {
             throw new IllegalStateException("Path search failed", e);
         }
 
+        searchCost=arena.nodeG(bestNode);
         // Walk the parent chain back to the start.
         int length = 0;
         for (int n = bestNode; n >= 0; n = arena.nodeParent(n)) {
@@ -280,7 +297,7 @@ public class AStarPathfinder {
         }
         List<Vec3> path = new ArrayList<Vec3>(length);
         Collections.addAll(path, reversed);
-        return path;
+        return snapshot.shorten(path);
     }
 
     // ------------------------------------------------------------------ costs
@@ -293,6 +310,12 @@ public class AStarPathfinder {
     }
 
     private double heuristic(int x, int y, int z, int ex, int ey, int ez) {
+        return TravelCost.lowerBound(x,y,z,ex,ey,ez,Math.min(cfg_jumpCost,cfg_climbCost),
+                Math.min(cfg_fallCost,cfg_climbCost))*Math.max(0,Math.min(1,cfg_heuristicWeight));
+    }
+
+    /** Descent preference only breaks equal-cost ties; it cannot hide a cheaper route. */
+    private double bridgeTie(int x, int y, int z, int ex, int ey, int ez) {
         double dx = x - ex;
         double dy = y - ey;
         double dz = z - ez;
@@ -311,8 +334,7 @@ public class AStarPathfinder {
             }
         }
 
-        // Heuristic weight; 1.0 is admissible (shortest route), higher trades optimality for speed.
-        return Math.sqrt(dx * dx + dy * dy + dz * dz) * cfg_heuristicWeight + penalty;
+        return penalty;
     }
 
     // ------------------------------------------------------------- validation

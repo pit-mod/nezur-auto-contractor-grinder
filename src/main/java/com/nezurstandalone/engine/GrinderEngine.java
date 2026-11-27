@@ -15,6 +15,11 @@ import com.nezurstandalone.settings.NumberSetting;
 import com.nezurstandalone.utils.NotificationManager;
 import com.nezurstandalone.utils.PitMapManager;
 import com.nezurstandalone.utils.RotationManager;
+import com.nezurstandalone.visual.TargetIndicatorGeometry;
+import com.nezurstandalone.visual.TargetIndicatorRenderer;
+import net.minecraft.client.renderer.entity.RenderManager;
+import net.minecraftforge.client.event.RenderWorldLastEvent;
+import com.nezurstandalone.combat.ServerRotations;
 import com.nezurstandalone.utils.RotationUtils;
 import com.nezurstandalone.utils.Utils;
 import net.minecraft.client.audio.SoundCategory;
@@ -68,7 +73,7 @@ import java.util.regex.Pattern;
  * the way — they sidestep to another spot and try again until it does. Prestige is no longer
  * hardcoded: it finds the "PRESTIGE" nametag, aims at the villager under it, and clicks it.
  */
-public class GrinderEngine extends Module implements DraggableHud {
+public class GrinderEngine extends Module implements DraggableHud, PathfinderManager.RoutePreference {
 
     public enum State {
         IDLE, LEAVING_SPAWN, FIGHTING, RETURNING_TO_MID, DRAGON_EGG, LOBBY_SWAP, LIMBO, LOBBY_RECONNECT, JOINING_PIT, PICKING_UP_MYSTIC,
@@ -315,6 +320,14 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     // ---- combat -------------------------------------------------------------
     private final com.nezurstandalone.combat.CombatOptions combatOptions=new com.nezurstandalone.combat.CombatOptions();
+    private final com.nezurstandalone.settings.ModeSetting routeBackend =
+            new com.nezurstandalone.settings.ModeSetting("Pathfinder", "Nezur", "Nezur", "Roni");
+
+    @Override public boolean useRoniRoutes() {
+        return "Roni".equals(routeBackend.getMode())
+                && (currentState == State.FIGHTING || currentState == State.RETURNING_TO_MID);
+    }
+
     private final com.nezurstandalone.settings.BooleanSetting advancedSettings=new com.nezurstandalone.settings.BooleanSetting("Show Advanced Settings",false);
     private final com.nezurstandalone.settings.ModeSetting quickSetup=new com.nezurstandalone.settings.ModeSetting("Quick Setup","Custom","Custom","Conservative","Balanced","Aggressive");
     private Module combatOptionsOwner;
@@ -331,12 +344,28 @@ public class GrinderEngine extends Module implements DraggableHud {
         if(!setting.isVisible())return false;
         if(advancedSettings.enabled)return true;
         String name=setting.name;
-        return setting==keybind||setting==advancedSettings||setting==quickSetup||name.startsWith("KillAura ")||name.equals("Combat Preset")||name.equals("Use KillAura")
+        return setting==keybind||setting==advancedSettings||setting==quickSetup||name.startsWith("KillAura ")||name.equals("Combat Preset")||name.equals("Use KillAura")||name.equals("Show Target")
                 ||name.equals("CPS Min")||name.equals("CPS Max")||name.equals("Attack Reach")||name.equals("Combat Aim Speed")||name.equals("Team Check (TDM)")
                 ||setting==autoWeapon||setting==idleRetreat||setting==onlyEventMode||setting==aimSpeed||setting==oofOnOverdrive
                 ||setting==autoPerk||setting==perk1||setting==perk2||setting==perk3||setting==perk4||setting==minMidPlayers||setting==lobbySwap
                 ||setting==showHud||setting==hudScale||name.equals("Hide in HUD");
     }
+    private final TargetIndicatorRenderer targetIndicator = new TargetIndicatorRenderer();
+    private final TargetIndicatorGeometry.Options targetIndicatorOptions = defaultTargetIndicator();
+
+    private static TargetIndicatorGeometry.Options defaultTargetIndicator() {
+        TargetIndicatorGeometry.Options options = new TargetIndicatorGeometry.Options();
+        options.style = TargetIndicatorGeometry.Style.ENERGY_BLADES;
+        options.scale = 1.2;
+        options.bladeRainbow = true;
+        options.bladeSpeed = 1.5;
+        options.bladeWidth = .19;
+        options.particleColor = 0xFFFFFFFF;
+        options.sparkColor = 0xFF000000;
+        options.particleSpeed = 1.4;
+        return options;
+    }
+
     private final SpireTargeting<net.minecraft.entity.EntityLivingBase> spireTargeting=new SpireTargeting<>();
     private java.util.function.Function<java.util.List<com.nezurstandalone.combat.AuraTargeting.Candidate<net.minecraft.entity.EntityLivingBase>>,net.minecraft.entity.EntityLivingBase> grinderTargetSelector;
     private final com.nezurstandalone.combat.GrinderCombat combat = new com.nezurstandalone.combat.GrinderCombat(this,this::mayFight,this::allowsCombatTarget,this::combatAimSpeed,this::activeCombatOptions)
@@ -608,7 +637,8 @@ public class GrinderEngine extends Module implements DraggableHud {
         java.util.List<String> lines=Utils.getScoreboardLines();
         if(!loadoutSettingsDirty && lines.equals(lastLoadoutLines))return;
         loadoutSettingsDirty=false;lastLoadoutLines=lines;
-        loadoutContext.observe(loadout,mc.theWorld,lastPerkUser,title,lines);
+        net.minecraft.client.network.NetHandlerPlayClient connection=mc.getNetHandler();
+        loadoutContext.observe(loadout,connection==null?null:connection.getNetworkManager(),lastPerkUser,title,lines);
         loadout.requirements(Utils.getLevel(),theWay.isEnabled());
         loadout.suspend(hasTemporaryPerkLease()||suppressed);
         com.nezurstandalone.settings.PerkSetting[] perks=perkBoxes(),streaks=ksBoxes();
@@ -846,7 +876,8 @@ public class GrinderEngine extends Module implements DraggableHud {
     // Rate-limited, humanised right-clicks for NPC interacts and the dragon egg, plus a spacing
     // stamp so GUI slot clicks are never machine-gunned at the server.
     private final ClickSimulator.Rate npcClickRate = new ClickSimulator.Rate(() -> 3.0);
-    private final ClickSimulator.Rate eggClickRate = new ClickSimulator.Rate(() -> 4.0);
+    private static final String EGG_ROTATION_OWNER = "grinder.egg";
+    private final ClickSimulator.Rate eggClickRate = new ClickSimulator.Rate(() -> 5.0);
 
     /**
      * Spacing between container clicks in the perk/prestige menus, sampled per click.
@@ -864,15 +895,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     // dragon egg
     private BlockPos currentEgg = null;
     private BlockPos lastEggPos = null;
-    private long eggScanStamp = 0L;
-    private long eggStationaryStart = 0L;
-    private long eggNavRepathAt = 0L;
-    private BlockPos eggBlacklistPos = null;
-    private long eggBlacklistUntil = 0L;
-    private long eggUnstuckUntil = 0L;
-    private int eggUnstuckAttempts = 0;
     private static final String EGG_MOVEMENT_OWNER = "grinder-egg";
-    private double eggApproachBestDistance = Double.MAX_VALUE;
     private long mysticRepathAt = 0L;
     private boolean sawMysticItem = false;
     private ItemStack mysticPickupStack;
@@ -897,7 +920,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         for(Perk p:PERKS)loadout.define(LoadoutPlanner.Kind.PERK,p.name,p.gold,p.minLevel,p.renown);
         for(Perk p:KILLSTREAKS)loadout.define(LoadoutPlanner.Kind.KILLSTREAK,p.name,p.gold,p.minLevel,p.renown);
         com.nezurstandalone.control.SessionResets.register(this,this::resetSessionActivity);
-        addSettings(quickSetup,advancedSettings);
+        addSettings(quickSetup,advancedSettings,routeBackend);
         addSettings(combatOptions.settings());
         quickSetup.addChangeListener(changed->{
             if(com.nezurstandalone.settings.Setting.isRestoring())return;
@@ -949,7 +972,7 @@ public class GrinderEngine extends Module implements DraggableHud {
         spireActive=false;spireActiveStartTime=0;spireEndStamp=0;lastCenterUpdate=0;centerX=centerZ=0;
         updateSpireFocusPause(false);lowMidTracking=false;lowMidStamp=0;squadSwapForced=false;
         nightQuestActive=false;nightQuestStartTime=nextNightQuestTime=0;questMessage.cancel();
-        currentEgg=lastEggPos=eggBlacklistPos=null;eggScanStamp=eggStationaryStart=eggNavRepathAt=eggBlacklistUntil=eggUnstuckUntil=0;eggUnstuckAttempts=0;
+        currentEgg=lastEggPos=null;
         lastMysticChatTime=lastMysticCountMs=mysticRepathAt=0;sawMysticItem=false;
         mysticPickupStack=null;mysticMissingSince=0L;mysticInventoryBefore=0;mysticTargetId=-1;
         mysticStowAll=false;mysticStowRetryAt=0L;
@@ -1275,7 +1298,7 @@ public class GrinderEngine extends Module implements DraggableHud {
     private void pauseGameplay() {
         releaseRaffleInteraction();
         releaseEventApproach();
-        com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
+        releaseEggApproach();
         com.nezurstandalone.control.MovementKeys.release("grinder-npc");
         com.nezurstandalone.control.MovementKeys.release("grinder");
         if(mysticStowScreen==null || mc.currentScreen!=mysticStowScreen)
@@ -1329,6 +1352,22 @@ public class GrinderEngine extends Module implements DraggableHud {
             return;
         }
         combat.onRenderFrame();
+    }
+
+    @SubscribeEvent
+    public void renderCombatTarget(RenderWorldLastEvent event) {
+        EntityPlayer target = combat.getIndicatorTarget();
+        if (target == null) return;
+        RenderManager view = mc.getRenderManager();
+        double fraction = event.partialTicks - 1;
+        net.minecraft.util.AxisAlignedBB bounds = target.getEntityBoundingBox().offset(
+                (target.posX - target.lastTickPosX) * fraction - view.viewerPosX,
+                (target.posY - target.lastTickPosY) * fraction - view.viewerPosY,
+                (target.posZ - target.lastTickPosZ) * fraction - view.viewerPosZ);
+        targetIndicator.draw(targetIndicatorOptions, com.nezurstandalone.control.Clock.SYSTEM.nanos() * 1.0e-9,
+                (bounds.minX + bounds.maxX) * .5, bounds.minY, (bounds.minZ + bounds.maxZ) * .5,
+                Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ), bounds.maxY - bounds.minY,
+                view.playerViewY, view.playerViewX, target.hurtTime > 0, target.getEntityId());
     }
 
     @SubscribeEvent
@@ -1412,7 +1451,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             if(wasDeadLastTick)overdriveOof.lifeEnded();else overdriveOof.clear();
             loadout.interrupt(com.nezurstandalone.control.Clock.millis(),"world/player changed");
             managedVisit=false;chooserSlot=null;
-            if(mc.theWorld==null){loadoutContext.disconnected(loadout);loadoutWorld=null;}
+            if(mc.theWorld==null){loadout.invalidateGold();loadoutWorld=null;}
             prestigeGold.suspend();
             blockhead.reset(); blockheadRepathAt=0; blockheadOwned=false; robbery.reset();robberyOwned=false;robberyRetreatAt=0; resetRaffle();
             pauseGameplay(); PathfinderManager.clear(this, true); resetMenuTracking(); combat.resetTargeting();
@@ -1421,7 +1460,7 @@ public class GrinderEngine extends Module implements DraggableHud {
             currentState = State.IDLE; previousZone = ""; lastMidScan = 0; cachedMidCount = 0;
             currentEgg = null; nightQuestActive = false; nextNightQuestTime = 0;
             spireActive=false; spireEndStamp=0; updateSpireFocusPause(false);
-            lastEggPos=null;eggBlacklistPos=null;eggBlacklistUntil=0;eggStationaryStart=0;
+            lastEggPos=null;
             combatMoveStuckSince=0;combatPathFailed=false;otherZoneEntryTime=0;
             prestigeSwapPending=false;prestigeLeftPit=false;lastSeenLevel=-1;
             correctionTick = mc.thePlayer == null ? -1 : mc.thePlayer.ticksExisted;
@@ -1624,11 +1663,10 @@ public class GrinderEngine extends Module implements DraggableHud {
         else currentEgg = null;
         if (hasDragonEggPriority()) { handleDragonEgg(); return; }
         if (currentState == State.DRAGON_EGG) {
-            com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
-
+            releaseEggApproach();
             GuardedInput.cancel(interactionOwner);
             RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
-            PathfinderManager.clear(this,true); currentState=State.IDLE; lastEggPos=null;eggBlacklistPos=null;eggBlacklistUntil=0;eggStationaryStart=0;
+            PathfinderManager.clear(this,true); currentState=State.IDLE; lastEggPos=null;
         }
 
         // Healing may keep combat navigation and tracking; attacks and weapon swaps remain gated.
@@ -2562,43 +2600,23 @@ public class GrinderEngine extends Module implements DraggableHud {
     }
 
     // ---- dragon egg ---------------------------------------------------------
-    // Farmed with the exact ChestAura recipe: approach with the walker, aim at a raytrace-verified
-    // visible point through the rotation manager, and right-click only when the crosshair is truly
-    // on the egg block, we are not mid-dig, and the humanised rate allows it. No blind interacts.
     private final com.nezurstandalone.utils.NearestEggScan eggScan = new com.nezurstandalone.utils.NearestEggScan();
+
     private void scanDragonEgg() {
-        long now = com.nezurstandalone.control.Clock.millis();
-        if (currentEgg != null && !com.nezurstandalone.utils.DragonEggTracker.usable(currentEgg)) currentEgg=null;
-        // The shared section index can take seconds to reach a nearby egg. A small loaded-only
-        // local pass gives prompt mid detection without loading chunks or scanning the whole world.
-        if (currentEgg == null && now >= eggScanStamp) {
-            eggScanStamp=now+500L;
-            BlockPos origin=new BlockPos(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
-            double best=Double.MAX_VALUE;
-            for(int x=-8;x<=8;x++)for(int z=-8;z<=8;z++)for(int y=-4;y<=4;y++) {
-                BlockPos at=origin.add(x,y,z);
-                if(mc.theWorld.isBlockLoaded(at) && mc.theWorld.getBlockState(at).getBlock()==Blocks.dragon_egg
-                        && com.nezurstandalone.utils.DragonEggTracker.usable(at)) {
-                    double d=mc.thePlayer.getDistanceSq(at.getX()+0.5,at.getY()+0.5,at.getZ()+0.5);
-                    if(d<best){best=d;currentEgg=at;}
-                }
-            }
-        }
-        BlockPos indexed=eggScan.step(16384);
-        // A partially scanned index is not evidence that our validated egg disappeared.
-        if(currentEgg==null && indexed!=null)currentEgg=indexed;
+        currentEgg = eggScan.step(16384);
+    }
+
+    private void releaseEggApproach() {
+        com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
+        ServerRotations.release(EGG_ROTATION_OWNER);
     }
 
     private void handleDragonEgg() {
         BlockPos egg = currentEgg;
         if (egg == null) return;
-        String eggZone=PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ);
-        boolean inEggSpawn=Utils.isInSpawn() || "Spawn".equals(eggZone) || "Overspawn".equals(eggZone);
-        boolean inEggMid="Pit".equals(eggZone);
-        if(inEggSpawn) {
-            // The normal grinder already handles the spawn drop without building a route.
-            // Preserve its forward/sprint/jump cadence until we have actually left spawn.
-            com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
+        String zone = PitMapManager.getZone(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
+        if (Utils.isInSpawn() || "Spawn".equals(zone) || "Overspawn".equals(zone)) {
+            releaseEggApproach();
             GuardedInput.cancel(interactionOwner);
             RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
             handleSpawn();
@@ -2606,79 +2624,69 @@ public class GrinderEngine extends Module implements DraggableHud {
         }
         boolean entering = currentState != State.DRAGON_EGG || !egg.equals(lastEggPos);
         currentState = State.DRAGON_EGG;
-        releaseCombat(); combat.resetTargeting();
-        long now = com.nezurstandalone.control.Clock.millis();
-        if (entering) {
-            // Discard the old chase/destination exactly once; isPathing alone includes combat.
-            PathfinderManager.clear(this,true); GuardedInput.cancel(interactionOwner);
+        releaseCombat();
+        combat.resetTargeting();
+        if (entering || PathfinderManager.isPathing()) {
+            PathfinderManager.clear(this, true);
+            GuardedInput.cancel(interactionOwner);
             releaseSpawnWalk(true);
             com.nezurstandalone.control.MovementKeys.release("grinder-npc");
-            com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
             RotationManager.getInstance().clearTarget(MOVEMENT_ROTATION_OWNER);
-            lastEggPos=egg; eggNavRepathAt=0; eggUnstuckAttempts=0;
-            eggUnstuckUntil=0; eggStationaryStart=now; eggApproachBestDistance=Double.MAX_VALUE;
+            RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
+            lastEggPos = egg;
         }
-        double cx=egg.getX()+0.5,cy=egg.getY()+0.5,cz=egg.getZ()+0.5;
-        double dist=mc.thePlayer.getDistance(cx,cy,cz);
-        Vec3 vp=eggVisiblePoint(egg);
-        // Take over the final approach before the old three-block stopping point. The walker
-        // must release its steering/keys first so aiming at the egg also drives us toward it.
-        // Mid is an open direct-walk area: never create an egg route there. Outside mid,
-        // retain pathfinding for the long approach and take over directly within reach.
-        boolean near = inEggMid || (dist<=4.0 && vp!=null);
-        boolean stopped = dist<=2.0;
-        boolean direct = near && (stopped || ((inEggMid || now>=eggUnstuckUntil) && eggForwardClear(cx,cz)));
-        if (direct && !stopped && !inEggMid) {
-            if (dist<eggApproachBestDistance-0.05) {
-                eggApproachBestDistance=dist; eggStationaryStart=now;
-            } else if (now-eggStationaryStart>=2000L) {
-                // A visible egg can still be separated by a ledge or obstruction. Let the
-                // walker choose another neighbour instead of pressing into it indefinitely.
-                direct=false; eggUnstuckUntil=now+1500L;
-                eggApproachBestDistance=Double.MAX_VALUE; eggStationaryStart=now;
-            }
-        }
-        if(direct) {
-            if(PathfinderManager.isPathing())PathfinderManager.clear(this,true);
-            Vec3 aim=vp!=null?vp:new Vec3(cx,cy,cz);
-            double dx=aim.xCoord-mc.thePlayer.posX;
-            double dy=aim.yCoord-(mc.thePlayer.posY+mc.thePlayer.getEyeHeight());
-            double dz=aim.zCoord-mc.thePlayer.posZ;
-            float yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
-            float pitch=(float)-Math.toDegrees(Math.atan2(dy,Math.sqrt(dx*dx+dz*dz)));
-            RotationManager.getInstance().setTargetRotation(INTERACTION_ROTATION_OWNER,
-                    RotationManager.PRIORITY_MACRO,yaw,pitch,(float)interactAimSpeed.value,true);
-            float yawError=Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(yaw-mc.thePlayer.rotationYaw));
-            com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER,
-                    mc.gameSettings.keyBindForward.getKeyCode(),!stopped && yawError<=30.0F);
-            eggApproachSpeed(!stopped && yawError<=30.0F,dist);
-            if(vp!=null)legitClickBlock(egg);
-            else GuardedInput.cancel(interactionOwner);
+
+        Vec3 visible = eggVisiblePoint(egg);
+        if (!canInteractWithEgg(egg) || visible == null) {
+            releaseEggApproach();
+            GuardedInput.cancel(interactionOwner);
             return;
         }
-        com.nezurstandalone.control.MovementKeys.release(EGG_MOVEMENT_OWNER);
-        GuardedInput.cancel(interactionOwner);
-        RotationManager.getInstance().clearTarget(INTERACTION_ROTATION_OWNER);
-        if(inEggMid) {
-            PathfinderManager.clear(this,true);
-            return;
-        }
-        // Preserve an active approach (including a no-line-of-sight sidestep) instead of stopping
-        // it each tick. Failed/completed routes choose another walkable neighbour, never the egg.
-        if(now>=eggNavRepathAt && (!PathfinderManager.isPathing()
-                || PathfinderManager.getState()==PathfinderManager.State.FAILED
-                || PathfinderManager.getState()==PathfinderManager.State.COMPLETED)) {
-            BlockPos stand=eggApproachSpot(egg);
-            eggNavRepathAt=now+1000L;
-            if(stand!=null)PathfinderManager.walkTo(this,stand.getX()+0.5,stand.getY(),stand.getZ()+0.5,true);
-        }
-        eggApproachSpeed(AutoWalker.INSTANCE.isActive(),dist);
+
+        double dx = egg.getX() + .5 - mc.thePlayer.posX;
+        double dy = egg.getY() + .5 - mc.thePlayer.posY;
+        double dz = egg.getZ() + .5 - mc.thePlayer.posZ;
+        double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        double error = Math.toRadians(net.minecraft.util.MathHelper.wrapAngleTo180_float(yaw - mc.thePlayer.rotationYaw));
+        double forward = Math.cos(error), strafe = -Math.sin(error);
+        boolean moving = distance > 2 && eggForwardClear(egg.getX() + .5, egg.getZ() + .5);
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER, mc.gameSettings.keyBindForward.getKeyCode(), moving && forward > .38);
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER, mc.gameSettings.keyBindBack.getKeyCode(), moving && forward < -.38);
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER, mc.gameSettings.keyBindLeft.getKeyCode(), moving && strafe > .38);
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER, mc.gameSettings.keyBindRight.getKeyCode(), moving && strafe < -.38);
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER, mc.gameSettings.keyBindSprint.getKeyCode(), moving && forward > .38 && distance > 3);
+        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER, mc.gameSettings.keyBindJump.getKeyCode(), moving && distance > 3);
+
+        aimAndInteractWithEgg(egg, visible);
     }
 
-    private void eggApproachSpeed(boolean moving,double distance) {
-        boolean fast=moving && distance>3.0;
-        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER,mc.gameSettings.keyBindSprint.getKeyCode(),fast);
-        com.nezurstandalone.control.MovementKeys.set(EGG_MOVEMENT_OWNER,mc.gameSettings.keyBindJump.getKeyCode(),fast);
+    private boolean canInteractWithEgg(BlockPos egg) {
+        return isToggled() && dragonEggSupport.isEnabled() && currentState == State.DRAGON_EGG
+                && egg.equals(currentEgg) && correctionTick < 0 && !isOnBreak && !isAutoHealBusy()
+                && mc.theWorld != null && mc.theWorld == engineWorld && mc.thePlayer != null
+                && mc.thePlayer == enginePlayer && mc.currentScreen == null && mc.playerController != null
+                && !mc.thePlayer.isDead && mc.thePlayer.getHealth() > 0 && !mc.thePlayer.isUsingItem()
+                && !mc.thePlayer.isSneaking() && !mc.thePlayer.isSpectator() && !mc.thePlayer.isRiding()
+                && mc.thePlayer.openContainer == mc.thePlayer.inventoryContainer
+                && PathfinderManager.available(this) && mc.theWorld.isBlockLoaded(egg)
+                && mc.theWorld.getBlockState(egg).getBlock() == Blocks.dragon_egg
+                && com.nezurstandalone.utils.DragonEggTracker.usable(egg);
+    }
+
+    private void aimAndInteractWithEgg(BlockPos egg, Vec3 point) {
+        Vec3 eyes = mc.thePlayer.getPositionEyes(1);
+        double dx = point.xCoord - eyes.xCoord, dy = point.yCoord - eyes.yCoord, dz = point.zCoord - eyes.zCoord;
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.hypot(dx, dz)));
+        ServerRotations.requestBlock(EGG_ROTATION_OWNER, yaw, pitch, 90, () -> canInteractWithEgg(egg));
+        if (!eggClickRate.ready() || mc.playerController.getIsHittingBlock()) return;
+        GuardedInput.useBlock(interactionOwner, egg, () -> canInteractWithEgg(egg) && eggClickRate.ready(),
+                eggClickRate::consume, () -> {
+                    if (!canInteractWithEgg(egg)) return null;
+                    return ServerRotations.raycastBlock(EGG_ROTATION_OWNER,
+                            Math.min(4.5, mc.playerController.getBlockReachDistance()));
+                });
     }
 
     /** Probe the next walking step, including floor support; visibility alone is not a route. */
@@ -2692,36 +2700,6 @@ public class GrinderEngine extends Module implements DraggableHud {
         net.minecraft.util.AxisAlignedBB floor=new net.minecraft.util.AxisAlignedBB(
                 step.minX,step.minY-0.6,step.minZ,step.maxX,step.minY,step.maxZ);
         return !mc.theWorld.getCollidingBoundingBoxes(mc.thePlayer,floor).isEmpty();
-    }
-
-    private BlockPos eggApproachSpot(BlockPos egg) {
-        java.util.List<BlockPos> spots=new java.util.ArrayList<>();
-        for(int r=1;r<=2;r++)for(int x=-r;x<=r;x++)for(int z=-r;z<=r;z++) {
-            if(Math.max(Math.abs(x),Math.abs(z))!=r)continue;
-            for(int y=-1;y<=1;y++) {
-                BlockPos at=egg.add(x,y,z);
-                if(mc.theWorld.isBlockLoaded(at) && mc.theWorld.isBlockLoaded(at.up())
-                        && mc.theWorld.isBlockLoaded(at.down())
-                        && !mc.theWorld.getBlockState(at).getBlock().getMaterial().blocksMovement()
-                        && !mc.theWorld.getBlockState(at.up()).getBlock().getMaterial().blocksMovement()
-                        && mc.theWorld.getBlockState(at.down()).getBlock().getMaterial().isSolid())spots.add(at);
-            }
-        }
-        spots.sort(java.util.Comparator.comparingDouble(at -> mc.thePlayer.getDistanceSq(at.getX()+0.5,at.getY(),at.getZ()+0.5)));
-        return spots.isEmpty()?null:spots.get((eggUnstuckAttempts++ & Integer.MAX_VALUE)%spots.size());
-    }
-
-    /** Crosshair-validated, not-mid-dig, rate-limited right-click on a block. ChestAura's gate. */
-    private void legitClickBlock(BlockPos pos) {
-        if (!eggClickRate.ready()) return;
-        if (mc.playerController.getIsHittingBlock()) return;
-        // GuardedInput checks the fresh native raycast after the camera update. Checking the
-        // previous tick's objectMouseOver here lost clicks while turning during the approach.
-        GuardedInput.useBlock(interactionOwner, pos, () -> isToggled() && !isAutoHealBusy()
-                && dragonEggSupport.isEnabled() && currentState==State.DRAGON_EGG
-                && PathfinderManager.available(this) && pos.equals(currentEgg)
-                && mc.theWorld.isBlockLoaded(pos)
-                && com.nezurstandalone.utils.DragonEggTracker.usable(pos), eggClickRate::consume);
     }
 
     /** First raytraced point on the block visible from the eyes, or null. */

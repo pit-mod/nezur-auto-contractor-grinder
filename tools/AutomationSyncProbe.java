@@ -30,7 +30,7 @@ public final class AutomationSyncProbe {
             mc.gameSettings=new net.minecraft.client.settings.GameSettings();
         }
         Nezur.moduleManager=new ModuleManager();
-        check(Nezur.moduleManager.getModules().size()==9,"AutoSprint is the additional module row");
+        check(Nezur.moduleManager.getModules().size()==10,"Standalone includes the AutoSprint and Events module rows");
         check(Nezur.moduleManager.getModuleByName("KillAura")==null,"KillAura remains internal");
         AutoGrinder grinder=Nezur.moduleManager.getModuleByClass(AutoGrinder.class);
         AutoContractor contractor=Nezur.moduleManager.getModuleByClass(AutoContractor.class);

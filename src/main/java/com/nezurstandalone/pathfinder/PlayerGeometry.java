@@ -13,11 +13,21 @@ public final class PlayerGeometry {
     }
     public static boolean trajectory(Space space,List<Vec3> points){if(points.isEmpty())return false;for(int i=0;i<points.size();i++)if(!segment(space,points.get(Math.max(0,i-1)),points.get(i)))return false;return true;}
     private static boolean intersects(Vec3 a,Vec3 b,AxisAlignedBB obstacle){
-        double e=1e-7;double[] min={obstacle.minX-.3+e,obstacle.minY-HEIGHT+e,obstacle.minZ-.3+e};
-        double[] max={obstacle.maxX+.3-e,obstacle.maxY-e,obstacle.maxZ+.3-e};
-        double[] from={a.xCoord,a.yCoord,a.zCoord},delta={b.xCoord-a.xCoord,b.yCoord-a.yCoord,b.zCoord-a.zCoord};double enter=0,leave=1;
-        for(int i=0;i<3;i++){if(Math.abs(delta[i])<1e-12){if(from[i]<min[i]||from[i]>max[i])return false;}
-            else {double first=(min[i]-from[i])/delta[i],last=(max[i]-from[i])/delta[i];if(first>last){double t=first;first=last;last=t;}enter=Math.max(enter,first);leave=Math.min(leave,last);if(enter>leave)return false;}}
+        return intersects(a.xCoord,a.yCoord,a.zCoord,b.xCoord,b.yCoord,b.zCoord,
+                obstacle.minX,obstacle.minY,obstacle.minZ,obstacle.maxX,obstacle.maxY,obstacle.maxZ);
+    }
+    static boolean intersects(double ax,double ay,double az,double bx,double by,double bz,
+                              double minX,double minY,double minZ,double maxX,double maxY,double maxZ){
+        double e=1e-7,enter=0,leave=1;
+        for(int axis=0;axis<3;axis++) {
+            double from=axis==0?ax:axis==1?ay:az;
+            double delta=axis==0?bx-ax:axis==1?by-ay:bz-az;
+            double min=axis==0?minX-.3+e:axis==1?minY-HEIGHT+e:minZ-.3+e;
+            double max=axis==0?maxX+.3-e:axis==1?maxY-e:maxZ+.3-e;
+            if(Math.abs(delta)<1e-12){if(from<min||from>max)return false;}
+            else {double first=(min-from)/delta,last=(max-from)/delta;if(first>last){double t=first;first=last;last=t;}
+                enter=Math.max(enter,first);leave=Math.min(leave,last);if(enter>leave)return false;}
+        }
         return true;
     }
     /** Main-thread adapter: the same native collision boxes as the immutable capture. */

@@ -269,6 +269,11 @@ public class RotationManager {
         clearTarget(OWNER_LEGACY);
     }
 
+    public boolean hasActiveTarget(String owner) {
+        Request request = requests.get(owner);
+        return request != null && request.expiresAt > com.nezurstandalone.control.Clock.millis();
+    }
+
     public void clearTarget(String owner) {
         Request request = requests.get(owner);
         if (request != null) {

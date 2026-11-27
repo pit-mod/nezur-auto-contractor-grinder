@@ -79,7 +79,7 @@ public class ClickGUI extends GuiScreen implements Frame.SelectionListener, GuiE
 
         int px = GuiTheme.PANEL_LEFT;
         for (Category category : populated) {
-            Frame frame = new Frame(category, px, GuiTheme.PANEL_TOP, panelW);
+            Frame frame = new Frame(category, px, GuiChrome.contentTop(width), panelW);
             for (Module m : Nezur.moduleManager.getModulesByCategory(category)) {
                 frame.buttons.add(new ModuleButton(m, category.name, px, 0, panelW, GuiTheme.ROW_H));
             }
@@ -90,10 +90,10 @@ public class ClickGUI extends GuiScreen implements Frame.SelectionListener, GuiE
         int paletteW = Math.min(GuiTheme.PALETTE_W, Math.max(80, width - 8));
         int paletteX = px + paletteW > width - 4 ? width - paletteW - 4 : px;
         if (palette == null) {
-            palette = new Palette(paletteX, GuiTheme.PANEL_TOP);
+            palette = new Palette(paletteX, GuiChrome.contentTop(width));
         } else {
             palette.x = paletteX;
-            palette.y = GuiTheme.PANEL_TOP;
+            palette.y = GuiChrome.contentTop(width);
         }
         palette.width = paletteW;
 

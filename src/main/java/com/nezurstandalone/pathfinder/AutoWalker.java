@@ -2,6 +2,8 @@ package com.nezurstandalone.pathfinder;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Vec3;
+import net.minecraft.util.BlockPos;
+import com.nezurstandalone.utils.RotationManager;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
@@ -379,20 +381,14 @@ public final class AutoWalker {
         double closing = horizontal < 0.001 ? 0 :
                 (mc.thePlayer.motionX * dx + mc.thePlayer.motionZ * dz) / horizontal;
         com.nezurstandalone.control.CombatMovement policy = combatMovement;
-        policy.update(net.minecraft.util.MathHelper.wrapAngleTo180_float(targetRots[0] - mc.thePlayer.rotationYaw),
-                mc.thePlayer.getDistanceToEntity(combatTarget), combatReach, closing,
-                mc.thePlayer.isCollidedHorizontally || !mc.thePlayer.canEntityBeSeen(combatTarget),
-                (mc.thePlayer.hurtTime > 0 && !mc.thePlayer.onGround)
+        double heading = net.minecraft.util.MathHelper.wrapAngleTo180_float(targetRots[0] - mc.thePlayer.rotationYaw);
+        boolean grinderOwnsChase = com.nezurstandalone.engine.GrinderEngine.ownsCombatChase(combatTarget);
+        boolean blocked = mc.thePlayer.isCollidedHorizontally || (!grinderOwnsChase && !mc.thePlayer.canEntityBeSeen(combatTarget));
+        boolean hazardous = (mc.thePlayer.hurtTime > 0 && !mc.thePlayer.onGround)
                 || mc.thePlayer.isInWater() || mc.thePlayer.isInLava()
-                || mc.theWorld.getBlockState(new net.minecraft.util.BlockPos(mc.thePlayer)).getBlock() == net.minecraft.init.Blocks.web);
-        // Grinder mid pressure has no stop-distance/backpedal band. Hazards and obstacles still stop it.
-        if (com.nezurstandalone.engine.GrinderEngine.isMidPressureActive()
-                && policy.state != com.nezurstandalone.control.CombatMovement.State.RECOVER
-                && policy.state != com.nezurstandalone.control.CombatMovement.State.ALIGN) {
-            policy.forward = true;
-            policy.back = false;
-            // Keep the movement policy sprint decision; do not force sprint at melee distance.
-        }
+                || mc.theWorld.getBlockState(new BlockPos(mc.thePlayer)).getBlock() == net.minecraft.init.Blocks.web;
+        if (grinderOwnsChase) policy.updatePressure(heading, horizontal, combatReach, blocked, hazardous);
+        else policy.update(heading, mc.thePlayer.getDistanceToEntity(combatTarget), combatReach, closing, blocked, hazardous);
         forwardIntent = policy.forward;
         com.nezurstandalone.control.MovementKeys.set(com.nezurstandalone.control.MovementKeys.walkerOwner(), mc.gameSettings.keyBindForward.getKeyCode(), policy.forward);
         com.nezurstandalone.control.MovementKeys.set(com.nezurstandalone.control.MovementKeys.walkerOwner(), mc.gameSettings.keyBindBack.getKeyCode(), policy.back);
@@ -658,7 +654,7 @@ public final class AutoWalker {
         float yawDiff = net.minecraft.util.MathHelper.wrapAngleTo180_float(targetYaw - currentYaw);
 
         // YIELD ROTATION TO CHEST AURA
-        boolean yieldRotation = false;
+        boolean yieldRotation = RotationManager.getInstance().hasActiveTarget(RotationManager.OWNER_CHEST);
 
         if (!yieldRotation) {
             // A big correction is turned faster than a small one, which is what a hand does and

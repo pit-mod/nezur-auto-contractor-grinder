@@ -1,3 +1,13 @@
+# 1.5.8 — Navigation and HUD updates
+
+- Update the Nezur pathfinder with faster terrain capture, improved route costs, and route smoothing. The optional Roni route setting from the local port is included.
+- Match the full client's combat chase and direct Dragon Egg approach. Preserve AutoSprint during manual movement handoff.
+- Keep verified perks and killstreaks across same-connection lobby swaps when the sidebar omits profile metadata.
+- Add the Events countdown HUD under Render and the Show Target option for KillAura.
+- Add liquid-glass navigation for Modules, HUD Editor, and Configs.
+
+Minecraft Forge 1.8.9, Java 8.
+
 # 1.5.7 — AutoSprint
 
 - Add AutoSprint under Player. When enabled, it activates vanilla sprint while you hold forward.

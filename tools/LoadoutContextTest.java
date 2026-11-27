@@ -32,7 +32,7 @@ public final class LoadoutContextTest {
    for(int i=1;i<=60;i++){
     long now=i*1000L;
     // Repeat the observed sequence: death, temporary empty world, new World object, partial sidebar, then same prestige.
-    c.disconnected(p);world=new Object();
+    p.invalidateGold();world=new Object();
     c.observe(p,world,"account@server",title,lines("Level: [55]","Gold: 100000g"));p.requirements(55,false);p.gold(100000+i,now);
     ok(p.next(null,now)==null,"same profile respawn cannot queue another inspection");
     c.observe(p,world,"account@server",title,lines("Prestige: IV","Level: [55]"));
@@ -56,7 +56,13 @@ public final class LoadoutContextTest {
   verified(p,0);c.observe(p,world,"b@server","THE HYPIXEL PIT",lines("Prestige: IV"));ok(!p.slot(Kind.PERK,1).equipmentKnown,"account change clears equipment");
   verified(p,0);c.observe(p,world,"b@server","THE PIT CLASSIC",lines("Prestige: IV"));ok(!p.slot(Kind.PERK,1).equipmentKnown,"game mode change clears equipment");
   p=planner();c=new LoadoutContext();c.observe(p,world,"a@server","THE HYPIXEL PIT",lines("Level: [55]"));p.requirements(55,false);verified(p,0);
-  c.observe(p,new Object(),"a@server","THE HYPIXEL PIT",lines("Level: [55]"));ok(!p.slot(Kind.PERK,1).equipmentKnown,"unidentified profile still revalidates on world replacement");
+  p.invalidateGold();
+  c.observe(p,null,"a@server","THE HYPIXEL PIT",lines("Level: [55]"));
+  c.observe(p,world,"a@server","THE HYPIXEL PIT",lines("Level: [55]"));
+  p.gold(9000,1000);
+  ok(p.next(null,1000)==null,"same connection lobby swap with no profile metadata does not rescan perks");
+  c.observe(p,new Object(),"a@server","THE HYPIXEL PIT",lines("Level: [55]"));
+  ok(!p.slot(Kind.PERK,1).equipmentKnown,"unidentified profile still revalidates on a fresh connection");
   System.out.println("LoadoutContextTest PASS checks="+checks);
  }
 }

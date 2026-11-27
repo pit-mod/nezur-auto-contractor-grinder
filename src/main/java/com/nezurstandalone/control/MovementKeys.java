@@ -5,22 +5,22 @@ import java.util.*;
 public final class MovementKeys {
     public static java.util.function.BooleanSupplier movementAllowed = () -> true;
     public static String owners(){StringBuilder out=new StringBuilder();for(Map.Entry<Integer,Press> e:presses.entrySet())out.append(e.getKey()).append(':').append(e.getValue().owner).append(',');return out.toString();}
-    private static final class Press {String owner; long session, expires;}
+    private static final class Press {String owner; long session, expires; boolean manualAssist;}
     private static final Map<Integer,Press> presses=new HashMap<>();
     public static String walkerOwner(){return "walker";}
     public static void set(String owner,int key,boolean down){
         if(down&&!movementAllowed.getAsBoolean()){release(owner);return;}
-        setOwnedKey(owner,key,down);
+        setOwnedKey(owner,key,down,false);
     }
 
     /** Assist physical forward movement while keeping the normal world and correction checks. */
     public static void holdManualSprint(String owner){
         if(!AutomationSafety.allowed()){release(owner);return;}
         int sprintKey=net.minecraft.client.Minecraft.getMinecraft().gameSettings.keyBindSprint.getKeyCode();
-        setOwnedKey(owner,sprintKey,true);
+        setOwnedKey(owner,sprintKey,true,true);
     }
 
-    private static void setOwnedKey(String owner,int key,boolean down){
+    private static void setOwnedKey(String owner,int key,boolean down,boolean manualAssist){
 
         if(key==net.minecraft.client.Minecraft.getMinecraft().gameSettings.keyBindJump.getKeyCode()){JumpController.request(owner,down);return;}
         net.minecraft.client.Minecraft mc=net.minecraft.client.Minecraft.getMinecraft();
@@ -29,7 +29,7 @@ public final class MovementKeys {
         if(down){
             if(p!=null&&!p.owner.equals(owner))return;
             if(p==null){p=new Press();p.owner=owner;presses.put(key,p);}
-            p.session=ClientSession.current();p.expires=Clock.SYSTEM.nanos()+250_000_000L;
+            p.manualAssist=manualAssist;p.session=ClientSession.current();p.expires=Clock.SYSTEM.nanos()+250_000_000L;
             KeyBinding.setKeyBindState(key,true);
         }else if(p!=null&&p.owner.equals(owner)){
             presses.remove(key);KeyBinding.setKeyBindState(key,com.nezurstandalone.input.NativeActionGate.physical(key));
@@ -39,6 +39,14 @@ public final class MovementKeys {
         JumpController.request(owner,false);
         for(Integer key:new ArrayList<>(presses.keySet())){Press p=presses.get(key);if(p.owner.equals(owner))set(owner,key,false);}
     }
+    public static void yieldToManualMovement() {
+        refresh();
+        for (Integer key : new ArrayList<>(presses.keySet())) {
+            Press press = presses.get(key);
+            if (press != null && !press.manualAssist) set(press.owner,key,false);
+        }
+    }
+
     public static void authorizationLost(){
         List<Integer> keys=new ArrayList<>(presses.keySet());presses.clear();List<Runnable> release=new ArrayList<>();
         for(int key:keys)release.add(()->KeyBinding.setKeyBindState(key,com.nezurstandalone.input.NativeActionGate.physical(key)));

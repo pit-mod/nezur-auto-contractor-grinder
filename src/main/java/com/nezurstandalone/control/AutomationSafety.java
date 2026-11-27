@@ -93,9 +93,12 @@ public final class AutomationSafety {
     @SubscribeEvent(priority=EventPriority.HIGHEST)
     public void tick(TickEvent.ClientTickEvent event){
         if(event.phase!=TickEvent.Phase.START)return;
-        if(!allowed() || manualMovement()){
-            MovementKeys.authorizationLost();JumpController.authorizationLost();
-            if(!allowed() || PathfinderManager.ownsMovement())PathfinderManager.authorizationLost();
+        boolean permitted = allowed();
+        if (!permitted || manualMovement()) {
+            if (permitted) MovementKeys.yieldToManualMovement();
+            else MovementKeys.authorizationLost();
+            JumpController.authorizationLost();
+            if (!permitted || PathfinderManager.ownsMovement()) PathfinderManager.authorizationLost();
         }
         if(GrinderDiagnostics.sampleDue())snapshot("ACTION_SAMPLE");
     }

@@ -31,12 +31,11 @@ public final class PathfinderConfig {
             new NumberSetting("Search Budget", 15000, 2000, 40000, 0);
 
     /**
-     * Heuristic weight. 1.0 is the classic admissible A* that always returns the shortest
-     * route; above 1 the search grows greedy — faster and cheaper, but it can settle for a
-     * longer path. The old code baked in 0.99.
+     * Search lower-bound weight. At most 1 so priority cannot hide a cheaper modeled route.
+     * Search remains bounded by the configured node budget and captured terrain.
      */
     public static final NumberSetting heuristicWeight =
-            new NumberSetting("Heuristic Weight", 0.99, 0.50, 2.00, 2);
+            new NumberSetting("Heuristic Weight", 0.99, 0.50, 1.00, 2);
 
     // ── Search: movement cost model ───────────────────────────────────────────
 
@@ -71,8 +70,8 @@ public final class PathfinderConfig {
     // ── Search: anti-bridge field ─────────────────────────────────────────────
 
     /**
-     * Strength of the outward push applied when the goal is below the player and close in the
-     * horizontal plane, so the search looks for an edge to drop off instead of bridging down.
+     * Descent preference when two search states have exactly the same lower-bound cost.
+     * It cannot override a cheaper route.
      */
     public static final NumberSetting antiBridgeStrength =
             new NumberSetting("Anti-Bridge Strength", 2.50, 0.00, 8.00, 2);

@@ -6,7 +6,7 @@ import java.util.Locale;
 /** Keep verified equipment across respawns in an identified profile, never across profile resets. */
 public final class LoadoutContext {
     private String scope="",profile="",prestige="";
-    private Object world;
+    private Object connection;
 
     private static String prestigeToken(String value) {
         String token=value.trim().replace("[", "").replace("]", "").toUpperCase(Locale.ROOT);
@@ -14,11 +14,14 @@ public final class LoadoutContext {
     }
     public boolean identified(){return !profile.isEmpty()||!prestige.isEmpty();}
 
-    public void observe(LoadoutPlanner planner,Object currentWorld,String account,String title,List<String> lines) {
+    public void observe(LoadoutPlanner planner,Object currentConnection,String account,String title,List<String> lines) {
         String nextScope=account+"|"+title;
-        if(!scope.equals(nextScope)){scope=nextScope;profile=prestige="";world=null;}
-        if(world!=null&&world!=currentWorld&&!identified())planner.resetEvidence();
-        world=currentWorld;
+        if(!scope.equals(nextScope)){scope=nextScope;profile=prestige="";connection=null;}
+        // Lobby transfers can replace the World and briefly remove the sidebar on the same connection.
+        if(currentConnection!=null){
+            if(connection!=null&&connection!=currentConnection&&!identified())planner.resetEvidence();
+            connection=currentConnection;
+        }
         String nextProfile="",nextPrestige="",bracketPrestige="";
         for(String line:lines) {
             String text=LoadoutPlanner.clean(line).trim();
@@ -36,8 +39,4 @@ public final class LoadoutContext {
         planner.context(scope+"|"+profile+"|"+prestige);
     }
 
-    public void disconnected(LoadoutPlanner planner) {
-        if(!identified())planner.resetEvidence();
-        planner.invalidateGold();world=null;
-    }
 }
