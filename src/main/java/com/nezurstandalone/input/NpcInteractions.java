@@ -22,7 +22,7 @@ public final class NpcInteractions {
             GuardedInput.interactEntity(owner,npc,()->classic() && allowed.getAsBoolean(),
                     ()->{if(!MC.playerController.isPlayerRightClickingOnEntity(MC.thePlayer,npc,MC.objectMouseOver))
                         MC.playerController.interactWithEntitySendPacket(MC.thePlayer,npc);});
-        } else GuardedInput.attack(owner,npc,()->!classic()&&allowed.getAsBoolean());
+        } else GuardedInput.pressUseOnNpc(owner,npc,()->!classic()&&allowed.getAsBoolean());
     }
 
     public static void request(Object owner,Entity npc,BooleanSupplier allowed,Runnable invoked) {

@@ -1,6 +1,7 @@
 package com.nezurstandalone.input;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.entity.Entity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.BlockPos;
@@ -54,6 +55,12 @@ public final class GuardedInput {
     }
 
     /** Exact NPC interaction after a fresh entity ray, without native item-use fallback. */
+    public static void pressUseOnNpc(Object owner, Entity entity, BooleanSupplier allowed) {
+        enqueue(owner, false, entity, null, allowed);
+        Intent intent = PENDING.get(owner);
+        if (intent != null) intent.npcUse = true;
+    }
+
     public static void interactEntity(Object owner,Entity entity,BooleanSupplier allowed,Runnable interact) {
         enqueue(owner,false,entity,null,allowed);
         Intent intent=PENDING.get(owner);if(intent!=null)intent.directEntityInteract=interact;
@@ -138,7 +145,15 @@ public final class GuardedInput {
                 if(intent.directEntityInteract!=null)intent.directEntityInteract.run();
                 else if (!intent.directItemUse) {
                     MovingObjectPosition cameraRay = MC.objectMouseOver;
-                    try { MC.objectMouseOver = ray; if (intent.attack) attack.run(); else use.run(); }
+                    try {
+                        MC.objectMouseOver = ray;
+                        if (intent.attack) attack.run();
+                        else if (!intent.npcUse || pressNpcUseBinding()) use.run();
+                        else {
+                            intent.report(Status.DROPPED);
+                            continue;
+                        }
+                    }
                     finally { MC.objectMouseOver = cameraRay; }
                 }
                 else MC.playerController.sendUseItem(MC.thePlayer, MC.theWorld, MC.thePlayer.getHeldItem());
@@ -149,6 +164,12 @@ public final class GuardedInput {
         }
     }
 
+    private static boolean pressNpcUseBinding() {
+        KeyBinding binding = MC.gameSettings.keyBindUseItem;
+        KeyBinding.onTick(binding.getKeyCode());
+        return binding.isPressed();
+    }
+
     private static final class Intent {
         java.util.function.Consumer<Status> observer;
         void report(Status status){
@@ -156,7 +177,7 @@ public final class GuardedInput {
             catch(RuntimeException ignored){/* Diagnostics cannot affect dispatch. */}
             if(observer!=null)observer.accept(status);
         }
-        boolean itemUse, directItemUse, crosshairAttack;
+        boolean itemUse, directItemUse, crosshairAttack, npcUse;
         Runnable executed;
         Runnable directEntityInteract;
         final long requestGeneration=++generation;
@@ -207,7 +228,7 @@ public final class GuardedInput {
                 return !entity.isDead && entity.worldObj == MC.theWorld
                         && hit.typeOfHit == MovingObjectPosition.MovingObjectType.ENTITY
                         && hit.entityHit == entity
-                        && (!(attack || directEntityInteract!=null) || MC.thePlayer.getPositionEyes(1.0F).distanceTo(hit.hitVec) <= 3.0);
+                        && (!(attack || npcUse || directEntityInteract!=null) || MC.thePlayer.getPositionEyes(1.0F).distanceTo(hit.hitVec) <= 3.0);
             }
             return !MC.playerController.getIsHittingBlock()
                     && hit.typeOfHit == MovingObjectPosition.MovingObjectType.BLOCK

@@ -1,3 +1,13 @@
+# 1.5.6 — Contract priorities and routing
+
+- Recognize triple and quadra kill contracts and add a dedicated Multi Kill toggle and ranking entry.
+- Replace overlapping ranking sliders with a sortable contract priority list. Existing rankings migrate automatically.
+- Keep Kung Fu combat inside the middle ring, start crouching during sneak-kill alignment, and recover equipment after no-armor contracts.
+- Improve gold-ingot routes by scoring reachable pickups and replanning when a pickup stalls.
+- Refine the golden-apple cycle and daily/weekly quest handling. Use the vanilla Use Item path for Hypixel NPCs while keeping Classic's interaction handling.
+
+Minecraft Forge 1.8.9, Java 8.
+
 # 1.5.5 — Contractor recovery and current automation
 
 - Update map/region detection and share loaded spawn/mid landing geometry across both bots.

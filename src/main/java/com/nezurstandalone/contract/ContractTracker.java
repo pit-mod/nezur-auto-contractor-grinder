@@ -29,6 +29,7 @@ public final class ContractTracker {
             case DIAMOND_SWORD_FINAL_BLOW: case NO_ARMOR_KILLS: case NO_PERK_KILLS:
             case FIST_MID_KILLS: case SNEAK_ATTACK_KILLS: case GRASS_KILLS:
             case LAVA_KILLS: case OBSIDIAN_KILLS: case BOW_TAG_KILLS: case FISH_DIAMOND_SWORD: case KILL_STREAK:
+            case MULTIKILL:
                 return true;
             default:return false;
         }

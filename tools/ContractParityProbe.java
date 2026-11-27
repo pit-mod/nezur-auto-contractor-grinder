@@ -12,10 +12,11 @@ public class ContractParityProbe {
   List<ContractOffer> zero=Arrays.asList(offer(1,"Fish a diamond sword.",0),offer(2,"Get a Triple kill.",0),offer(3,"Kill 7 players using lava.",0));
   ContractSelector.Choice none=ContractSelector.choose(zero,ContractSelector.DEFAULT_PRIORITY,Collections.<ContractOffer.Type>emptyList(),true,new Random(1));System.out.println("zero_vile_fallback="+none.mode);
   if(args.length>0 && args[0].equals("strict"))check(none.mode==ContractSelector.Mode.NONE,"zero_vile_rejected");
-  List<ContractOffer> fall=Arrays.asList(offer(1,"Fish a diamond sword.",0),offer(2,"Get a Triple kill.",2),offer(3,"Kill 7 players using lava.",0));
-  int violations=0;for(int i=0;i<100;i++){ContractSelector.Choice c=ContractSelector.choose(fall,ContractSelector.DEFAULT_PRIORITY,Collections.<ContractOffer.Type>emptyList(),true,new Random(i));if(c.offer.vileAmount==0)violations++;}
+  List<ContractOffer> fall=Arrays.asList(offer(1,"Fish a diamond sword.",0),offer(2,"Kill 7 players using lava.",2),offer(3,"Get a Triple kill.",2));
+  check(ContractSelector.choose(fall,ContractSelector.DEFAULT_PRIORITY,Arrays.asList(ContractOffer.Type.MULTIKILL),true,new Random(1)).offer.type==ContractOffer.Type.MULTIKILL,"enabled_multikill_selectable");
+  int violations=0;for(int i=0;i<100;i++){ContractSelector.Choice c=ContractSelector.choose(fall,ContractSelector.DEFAULT_PRIORITY,Collections.<ContractOffer.Type>emptyList(),true,new Random(i));if(c.offer.vileAmount==0 || c.offer.type==ContractOffer.Type.MULTIKILL)violations++;}
   System.out.println("zero_vile_fallback_violations_100="+violations);
-  if(args.length>0 && args[0].equals("strict"))check(violations==0,"random_fallback_vile_only");
+  if(args.length>0 && args[0].equals("strict"))check(violations==0,"fallback_vile_only_and_disabled_multikill_respected");
   String[] original={"Vampire","Strength-Chaining","Golden Heads",null};String[] snapshot=ContractPerkPlan.snapshot(original),during=ContractPerkPlan.gappleLoadout(snapshot);
   check(during[0]==null&&during[2]==null&&"Strength-Chaining".equals(during[1])&&snapshot[0].equals("Vampire")&&snapshot[3]==null,"exact_perk_snapshot_and_blocker_removal");
   check(ContractPerkPlan.kungFuSlot(original,new String[]{null,null,null,null},new boolean[]{true,true,true,true})==1,"kung_fu_protects_healing_perks");

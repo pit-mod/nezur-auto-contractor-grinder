@@ -13,7 +13,7 @@ def extract(prefix):
 def write(name,text):
  p=src/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text,encoding='utf-8')
 write(Path('net/minecraft/client/gui/inventory/GuiInventory.java'),'package net.minecraft.client.gui.inventory;public class GuiInventory{public GuiInventory(Object p){}}')
-write(Path('net/minecraft/item/ItemStack.java'),'package net.minecraft.item;public class ItemStack{}')
+write(Path('net/minecraft/item/ItemStack.java'),'package net.minecraft.item;public class ItemStack{public boolean fresh=true;}')
 write(Path('com/nezurstandalone/control/GuiLease.java'),'package com.nezurstandalone.control;public class GuiLease{public static boolean owns(Object o){return true;}public static boolean acquire(Object o){return true;}public static void release(Object o){}}')
 write(Path('com/nezurstandalone/control/InventoryOwner.java'),'package com.nezurstandalone.control;public class InventoryOwner{public static boolean acquire(Object o){return true;}}')
 write(Path('com/nezurstandalone/input/NativeActionGate.java'),'package com.nezurstandalone.input;public class NativeActionGate{public static boolean manual(){return false;}}')
@@ -27,14 +27,15 @@ write(Path('FreshPantsTest.java'),'''import com.nezurstandalone.contract.*;impor
 public class FreshPantsTest {
  enum State{CHECKING_SCOREBOARD,CONTRACT_COMPLETE,RESTORING_PERKS,PREPARING_CONTRACT,FINDING_CONTRACTOR}
  State state=State.CHECKING_SCOREBOARD;void move(State next){state=next;}
- boolean restoreFreshPantsAfterNoArmor,freshPantsDispatched,halted;int source=0,armorScreenRecoveries;MC mc=new MC();
+ boolean restoreFreshPantsAfterNoArmor,freshPantsDispatched,halted;int source=0,armorScreenRecoveries,freshPantsSwapSource=-1,freshPantsSwapHotbar;MC mc=new MC();
  ContractScoreboard.Snapshot scoreboard,selected;
  net.minecraft.client.gui.inventory.GuiInventory armorScreen;
  static class AutoHeal{static boolean isHealing(){return false;}}
  static class Container{int windowId;}
- static class Inventory{net.minecraft.item.ItemStack[] armorInventory=new net.minecraft.item.ItemStack[4];Object getItemStack(){return null;}}
+ static class Inventory{int currentItem;ItemStack[] armorInventory=new ItemStack[4], main=new ItemStack[36];ItemStack getStackInSlot(int slot){return main[slot];}Object getItemStack(){return null;}}
  static class Player{Inventory inventory=new Inventory();Container inventoryContainer=new Container(),openContainer=inventoryContainer;boolean isUsingItem(){return false;}}
  static class MC{Player thePlayer=new Player();Object currentScreen;void displayGuiScreen(Object s){currentScreen=s;}}
+ boolean isFreshPants(ItemStack item){return item!=null&&item.fresh;}
  int freshPantsSlot(){return source;}void pauseNavigation(){}void log(String s){}
  boolean canStowArmor(){return true;}void stopGrinder(){}
  boolean inventoryActionReady(){if(WindowActions.pending&&!WindowActions.ack)return false;WindowActions.pending=false;return true;}
@@ -63,6 +64,15 @@ public class FreshPantsTest {
   check(c.finishFreshPantsRestore()&&!c.restoreFreshPantsAfterNoArmor&&WindowActions.clicks==0,"Missing pants skip immediately without a click");
   c=new FreshPantsTest();c.mc.thePlayer.inventory.armorInventory[1]=new net.minecraft.item.ItemStack();
   check(c.finishFreshPantsRestore()&&WindowActions.clicks==0,"Existing pants are preserved");
+  WindowActions.reset();c=new FreshPantsTest();c.source=9;
+  Inventory inv=c.mc.thePlayer.inventory;inv.armorInventory[1]=new ItemStack();inv.armorInventory[1].fresh=false;
+  ItemStack freshPants=new ItemStack();inv.main[9]=freshPants;
+  check(!c.finishFreshPantsRestore()&&!c.finishFreshPantsRestore()&&WindowActions.slot==9&&WindowActions.mode==2,"Stage fresh pants from the main inventory");
+  inv.main[1]=freshPants;WindowActions.ack=true;
+  check(!c.finishFreshPantsRestore()&&WindowActions.slot==7&&WindowActions.clicks==2,"Swap staged pants directly with current leggings");
+  inv.main[1]=inv.armorInventory[1];inv.armorInventory[1]=freshPants;
+  check(!c.finishFreshPantsRestore()&&WindowActions.slot==9&&WindowActions.clicks==3,"Return displaced leggings to the original source slot");
+  check(c.finishFreshPantsRestore()&&!c.restoreFreshPantsAfterNoArmor,"Finish after the final inventory acknowledgement");
   for(int slot:new int[]{0,8,9,35}){
    WindowActions.reset();c=new FreshPantsTest();c.source=slot;c.restoreFreshPantsAfterNoArmor=true;
    check(!c.finishFreshPantsRestore()&&c.armorScreen!=null&&WindowActions.clicks==0,"Open owned inventory before dispatch");

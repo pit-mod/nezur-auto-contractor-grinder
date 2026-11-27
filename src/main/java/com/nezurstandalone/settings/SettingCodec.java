@@ -8,6 +8,7 @@ import java.util.*;
 public final class SettingCodec {
     private SettingCodec() {}
     public static JsonElement encode(Setting s) {
+        if(s instanceof ContractPrioritySetting)return new JsonPrimitive(((ContractPrioritySetting)s).saveOrder());
         if(s instanceof BooleanSetting)return new JsonPrimitive(((BooleanSetting)s).isEnabled());
         if(s instanceof NumberSetting)return new JsonPrimitive(((NumberSetting)s).getValue());
         if(s instanceof RangeSetting){RangeSetting r=(RangeSetting)s;JsonObject o=new JsonObject();o.addProperty("min",r.minVal);o.addProperty("max",r.maxVal);return o;}
@@ -28,6 +29,7 @@ public final class SettingCodec {
     }
     private static int integer(JsonElement e){double v=number(e);if(v!=Math.rint(v) || v<Integer.MIN_VALUE || v>Integer.MAX_VALUE)throw new IllegalArgumentException("Expected integer");return (int)v;}
     public static Runnable decode(Setting s, JsonElement e) {
+        if(s instanceof ContractPrioritySetting){String v=string(e);return ()->((ContractPrioritySetting)s).loadOrder(v);}
         Runnable mutation=decodeValue(s,e);
         return ()->Setting.restore(mutation);
     }

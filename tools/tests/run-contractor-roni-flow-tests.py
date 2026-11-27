@@ -20,6 +20,10 @@ public class ContractorRoniFlowTest {
 '''+extract('    private boolean keepGrindingUnsupported()')+'''
  static int checks;static void check(boolean b,String why){checks++;if(!b)throw new AssertionError(why);}
  public static void main(String[] args){
+  for(String objective:new String[]{"Get a triple kill","Get a quadra kill"}){
+   ContractOffer offer=ContractOffer.parse(10,0,0,"Choice #1",Arrays.asList("Task:",objective,"Click to pick"));
+   check(offer.type==ContractOffer.Type.MULTIKILL&&offer.isNamedMultikill()&&offer.required==1,"Named multikill is a single objective: "+objective);
+  }
   ContractDailyCount d=new ContractDailyCount();d.context("account-a",86400000L);
   check(d.remaining()==-1,"Unknown until server NPC lore is read");
   d.observe(Arrays.asList("Daily contracts: 4"));check(d.remaining()==4&&!d.estimated(),"Captured root lore parses four remaining");

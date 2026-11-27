@@ -2,6 +2,7 @@ package com.nezurstandalone.contract;
 
 /** Pure slot planning; the caller must still verify every server GUI transition. */
 public final class ContractPerkPlan {
+    public static final long GAPPLE_MIN_OOF_COOLDOWN_MS = 10500;
     private ContractPerkPlan() { }
 
     public static boolean protectedForKungFu(String name) {
@@ -9,10 +10,20 @@ public final class ContractPerkPlan {
     }
 
     public static boolean gappleCooldownReady(long now,long lastSuccessfulDeath,long cooldown) {
-        return lastSuccessfulDeath==0 || now-lastSuccessfulDeath>=Math.max(9000,cooldown);
+        return lastSuccessfulDeath==0 || now-lastSuccessfulDeath>=Math.max(GAPPLE_MIN_OOF_COOLDOWN_MS,cooldown);
     }
     public static boolean gappleOofReady(long now,long launch,long lastSuccessfulDeath,long delay,long cooldown,boolean airborne) {
         return airborne && launch>0 && now-launch>=delay && gappleCooldownReady(now,lastSuccessfulDeath,cooldown);
+    }
+    public static boolean gappleFlightOofReady(long now,long launch,long lastOof,long cooldown,
+                                               boolean grounded,double motionY) {
+        // If a confirmed pad flight is already descending, use the remaining airborne window.
+        long delay=motionY<-.10?500:1500;
+        return gappleOofReady(now,launch,lastOof,delay,cooldown,!grounded);
+    }
+
+    public static boolean gappleOofRateLimited(String message) {
+        return message!=null && message.toLowerCase(java.util.Locale.ROOT).contains("only /oof every");
     }
     /** 0=apple ready, 1=natural deaths, 2=bounded failure. Apple availability wins over death guidance. */
     public static int gappleInitialAction(boolean apple,int deaths,int maximum) {
@@ -50,7 +61,7 @@ public final class ContractPerkPlan {
     }
     /** Recognize a pad launch even if the first high-velocity update was missed. */
     public static boolean gappleLaunchDetected(boolean grounded,double motionY,double heightAbovePad,double horizontalSq){
-        return !grounded && horizontalSq<36 && (motionY>.25 || heightAbovePad>1.25);
+        return !grounded && horizontalSq<36 && (motionY>.50 || heightAbovePad>1.55);
     }
     public static boolean gappleWaitReached(double horizontalSq,double heightError,double padHorizontalSq,boolean grounded){
         return grounded && horizontalSq<=2.25 && Math.abs(heightError)<=1.25 && padHorizontalSq>=36;

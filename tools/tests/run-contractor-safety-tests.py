@@ -16,18 +16,19 @@ write(Path('com/nezurstandalone/control/Clock.java'),'package com.nezurstandalon
 write(Path('com/nezurstandalone/control/ClientSession.java'),'package com.nezurstandalone.control;public class ClientSession{public static long current(){return 2;}}')
 write(Path('com/nezurstandalone/control/CommandCoordinator.java'),'package com.nezurstandalone.control;public class CommandCoordinator{public static void cancel(Object o){}}')
 write(Path('com/nezurstandalone/contract/ContractCombatPolicy.java'),'package com.nezurstandalone.contract;public class ContractCombatPolicy{public static void clear(){}}')
-assert 'if(selected.type==ContractOffer.Type.GOLDEN_APPLES&&!ensureInitialAppleBeforeAcceptance(now))return;' in source
+assert 'if(!selectedFallback && selected.type==ContractOffer.Type.GOLDEN_APPLES&&!ensureInitialAppleBeforeAcceptance(now))return;' in source
 click=extract('    private boolean click(ContainerChest')
 assert click.index('!ensureInitialAppleBeforeAcceptance(now)')<click.index('mc.playerController.windowClick')
-assert source.count('gappleLastOof=now')==1
+assert 'gapplePendingOof=true;gappleOofSentAt=now;gappleLastOof=now;' in source
+assert 'gap'+'pleOofRateLimited(message)' in source
 write(Path('ContractorSafetyTest.java'),'''import com.nezurstandalone.contract.ContractPerkPlan;
 import com.nezurstandalone.utils.ContractorConfigMigration;import com.google.gson.*;
 public class ContractorSafetyTest {
  static int checks;static void check(boolean b,String why){checks++;if(!b)throw new AssertionError(why);}
 '''+extract('    public enum State')+'''
- State state=State.GAPPLE_ENTERING_MID;long actionSession,noOfferRetryAt,nextPoll,nextAction,stuckRespawnUntil,gappleRespawnAt=50;
+ State state=State.GAPPLE_ENTERING_MID;long actionSession,noOfferRetryAt,nextPoll,nextAction,stuckRespawnUntil,gappleRespawnAt=50,gappleRespawnSettleUntil;
  boolean gappleActive=true,gapplePreAccept=true,gapplePendingOof=true,gappleDeathSeen=true,purchaseConfirmed,pendingClick,pendingQuestClick,classicMenuAction,selectedFallback;
- int classicActionSlot,attempts,apples,gappleDeaths=1,begins,cancels,restores;String classicActionName,purchaseName;Object selected=new Object(),world,gappleFollow=new Object(),gapplePad=new Object(),gappleWait=new Object();
+ int classicActionSlot,attempts,apples,gappleEatingSlot,gappleDeaths=1,begins,cancels,restores;String classicActionName,purchaseName;Object selected=new Object(),world,gappleFollow=new Object(),gapplePad=new Object(),gappleWait=new Object(),gappleStage=new Object();java.util.Set<Object> rejectedGapplePads=new java.util.HashSet<>();
  boolean unconfirmed,halted;MC mc=new MC();Flag goldenApples=new Flag();Reset offerGate=new Reset(),stuckWatch=new Reset(),menuAction=new Reset();AutoGrinder engine=new AutoGrinder();
  static class Flag{boolean enabled=true;}
  static class Player{boolean isDead;float getHealth(){return isDead?0:20;}}
@@ -38,6 +39,7 @@ public class ContractorSafetyTest {
   boolean isRestoringTemporaryPerk(){return restoring;}void requestGappleInspection(){inspections++;}}
  boolean isToggled(){return true;}boolean hasUnconfirmedOperation(){return unconfirmed;}
  void uncertainAction(String s){halted=true;}void cancelGapple(){cancels++;gappleActive=gapplePreAccept=false;}
+ boolean gapplePastInitialApple(){return false;}
  void cancelInventoryOperation(){}void closeOwnedMenu(){}void cleanupNavigation(){}void stopGrinder(){}void startGrinder(){}
  void restorePerks(){restores++;}void logImportant(String s){}void move(State s){state=s;}
  void gapplePhase(State s,long now,String msg){state=s;}AutoGrinder grinder(){return engine;}
@@ -61,14 +63,17 @@ public class ContractorSafetyTest {
   c=new ContractorSafetyTest();c.engine.eligible=false;
   check(!c.ensureInitialAppleBeforeAcceptance(1000)&&c.begins==0&&c.restores==1,"Unavailable apple preparation cannot accept a fallback offer");
   check(c.state==State.NO_VILE_OFFERS&&c.noOfferRetryAt==301000,"Unavailable preparation uses bounded retry");
-  check(!ContractPerkPlan.gappleCooldownReady(18999,10000,9000),"No activation before dispatch plus 9 seconds");
-  check(ContractPerkPlan.gappleCooldownReady(19000,10000,9000),"Ready exactly 9 seconds after dispatch");
-  check(ContractPerkPlan.gappleCooldownReady(22000,10000,9000),"Late eating completion does not add another 9 seconds");
-  check(!ContractPerkPlan.gappleCooldownReady(18999,10000,0),"Configured low value cannot skip 9-second minimum");
-  check(!ContractPerkPlan.gappleCooldownReady(19000,10000,15000),"Explicit longer custom cooldown remains respected");
+  check(!ContractPerkPlan.gappleCooldownReady(20499,10000,10500),"No activation before dispatch plus 10.5 seconds");
+  check(ContractPerkPlan.gappleCooldownReady(20500,10000,10500),"Ready exactly 10.5 seconds after dispatch");
+  check(ContractPerkPlan.gappleCooldownReady(22000,10000,10500),"Late eating completion does not add another 10.5 seconds");
+  check(!ContractPerkPlan.gappleCooldownReady(20499,10000,0),"Configured low value cannot skip 10.5-second minimum");
+  check(!ContractPerkPlan.gappleCooldownReady(20500,10000,15000),"Explicit longer custom cooldown remains respected");
+  check(!ContractPerkPlan.gappleFlightOofReady(20499,19500,10000,10500,false,-.2),"Descending flight cannot bypass cooldown");
+  check(ContractPerkPlan.gappleFlightOofReady(20500,19500,10000,10500,false,-.2),"Descending flight can use the remaining airborne window");
+  check(!ContractPerkPlan.gappleFlightOofReady(20500,19500,10000,10500,true,-.2),"Must still be airborne");
   JsonObject config=new JsonObject(),module=new JsonObject(),settings=new JsonObject();
   rootConfig(config,module,settings,12000);ContractorConfigMigration.migrate(config);
-  check(settings.get("Gapple Oof Cooldown ms").getAsInt()==9000,"Existing old default migrates to requested 9 seconds");
+  check(settings.get("Gapple Oof Cooldown ms").getAsInt()==10500,"Existing old default migrates to requested 10.5 seconds");
   settings.addProperty("Gapple Oof Cooldown ms",15000);ContractorConfigMigration.migrate(config);
   check(settings.get("Gapple Oof Cooldown ms").getAsInt()==15000,"Custom longer delay preserved");
   System.out.println("Contractor acceptance, respawn and timing: "+checks+" checks passed");

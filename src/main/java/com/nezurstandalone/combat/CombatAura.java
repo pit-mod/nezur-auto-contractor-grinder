@@ -236,6 +236,7 @@ public final class CombatAura {
         }
 
         if (aimOnly) { stage = Stage.TRACKING; return; }
+        com.nezurstandalone.contract.ContractCombatPolicy.trackSneakTarget(target);
 
         // Grinder owns an independent region click pump; this driver supplies aim only there.
         if (com.nezurstandalone.engine.GrinderEngine.usesPitClicker(this)) {
@@ -276,7 +277,7 @@ public final class CombatAura {
         if (entity instanceof EntityPlayer && selectionFilter != null && !selectionFilter.test((EntityPlayer) entity)) return false;
         return com.nezurstandalone.input.NativeActionGate.combatOperationAllowed.getAsBoolean()
                 && activityAllowed.getAsBoolean() && entity != null && mc.thePlayer != null && mc.currentScreen == null
-                && com.nezurstandalone.contract.ContractCombatPolicy.allowsAttack(entity)
+                && com.nezurstandalone.contract.ContractCombatPolicy.allowsAttack(entity,hit)
                 && !mc.thePlayer.isUsingItem() && !entity.isDead && entity.worldObj == mc.theWorld
                 && hit != null && hit.typeOfHit == net.minecraft.util.MovingObjectPosition.MovingObjectType.ENTITY
                 && hit.entityHit == entity && hit.hitVec != null

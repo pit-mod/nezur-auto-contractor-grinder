@@ -102,6 +102,7 @@ public class ConfigManager {
 
         try (FileReader reader = new FileReader(MODULES_FILE)) {
             JsonObject root = new JsonParser().parse(reader).getAsJsonObject();
+            ContractorConfigMigration.migrate(root);
 
             for (Module module : Nezur.moduleManager.getModules()) {
                 if (root.has(module.getName())) {

@@ -1022,6 +1022,10 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     public void restoreTemporaryContractPerks(boolean stopGrinderAfter) {
         if (!hasTemporaryPerkLease()) return;
+        if (contractGappleRequested && !contractGappleRemove) {
+            releaseGappleInspection();
+            return;
+        }
         contractKungFuStopAfterRestore |= stopGrinderAfter;
         if (contractKungFuBefore == null || (contractKungFuRequested && contractKungFuSlot >= 0
                 && "Kung Fu Knowledge".equalsIgnoreCase(contractKungFuBefore[contractKungFuSlot]))) {
@@ -1062,7 +1066,9 @@ public class GrinderEngine extends Module implements DraggableHud {
             int slot = findPerkSlotIndex(inv, i + 1);
             if (slot >= 0 && !hasResolvedPerkLore(loreOf(inv.getStackInSlot(slot)))) return false;
         }
-        if (System.nanoTime() - guiOpenStamp < 1_500_000_000L) return false;
+        // A fourth slot is optional and may arrive after the three level-based slots.
+        long settleNanos = findPerkSlotIndex(inv, 4) >= 0 ? 600_000_000L : 900_000_000L;
+        if (System.nanoTime() - guiOpenStamp < settleNanos) return false;
 
         String[] equipped = new String[4];
         int[] indices = new int[4];
@@ -1582,6 +1588,13 @@ public class GrinderEngine extends Module implements DraggableHud {
             return;
         }
 
+        if (fistMidContract() && !hasPendingFistPerkChange()
+                && currentState != State.PERK_NAVIGATING && currentState != State.PERK_INTERACTING
+                && currentState != State.PRESTIGE_NAVIGATING && currentState != State.PRESTIGE_INTERACTING) {
+            handleFistMidContract();
+            return;
+        }
+
         // A completed Classic pickup must not start another inventory-stow/menu trip first.
         if(classicRuntime() && currentState==State.PICKING_UP_MYSTIC && mysticPickupStack!=null
                 && countMatchingMystics(mysticPickupStack)>mysticInventoryBefore){finishMysticPickup();return;}
@@ -1896,6 +1909,12 @@ public class GrinderEngine extends Module implements DraggableHud {
      * in the way, then snaps back to the straight chase the moment it is moving again.
      */
     private void driveCombatMovement(EntityPlayer target) {
+        // A route around an obstacle can take the player outside the Kung Fu ring.
+        if (fistMidContract()) {
+            if (PathfinderManager.hasDestination()) PathfinderManager.clear(this, true);
+            PathfinderManager.combatTarget(PathfinderManager.claim(this), target);
+            return;
+        }
         long now = com.nezurstandalone.control.Clock.millis();
         if(isRagePitEventActive() && !"Pit".equals(PitMapManager.getZone(mc.thePlayer.posX,mc.thePlayer.posY,mc.thePlayer.posZ))) {
             if(PathfinderManager.hasDestination())PathfinderManager.clear(this,true);
@@ -3406,6 +3425,8 @@ public class GrinderEngine extends Module implements DraggableHud {
         for (int i = 0; i < boxes.length; i++) {
             int slotIdx = findPerkSlotIndex(inv, i + 1);
             if (slotIdx < 0) {
+                if (hasTemporaryPerkLease() && contractKungFuBefore != null && contractKungFuBefore[i] != null)
+                    return; // Do not verify a temporary change when a previously occupied slot is absent.
                 continue; // this account does not have that perk slot at all
             }
             ItemStack st = inv.getStackInSlot(slotIdx);
@@ -3440,7 +3461,8 @@ public class GrinderEngine extends Module implements DraggableHud {
             clickMenu(container, slotIdx, "choosePerk");
             return;
         }
-        if (System.nanoTime() - guiOpenStamp < 1_500_000_000L) return;
+        long verificationNanos = hasTemporaryPerkLease() ? 650_000_000L : 1_500_000_000L;
+        if (System.nanoTime() - guiOpenStamp < verificationNanos) return;
         log("Perks verified.");
         perksNeedSync = false;
         if (contractKungFuRestoring) {
@@ -4362,4 +4384,42 @@ public class GrinderEngine extends Module implements DraggableHud {
 
     private boolean contractorLoadoutSuppressed;
     private final RaffleMovementProgress raffleMovement=new RaffleMovementProgress();
+
+    private boolean fistMidContract() {
+        return com.nezurstandalone.contract.ContractCombatPolicy.type()
+                == com.nezurstandalone.contract.ContractOffer.Type.FIST_MID_KILLS;
+    }
+
+    private boolean hasPendingFistPerkChange() {
+        return hasTemporaryPerkLease() && (contractKungFuRestoring || !contractKungFuReady);
+    }
+
+    private void handleFistMidContract() {
+        double x = mc.thePlayer.posX, y = mc.thePlayer.posY, z = mc.thePlayer.posZ;
+        if (PitMapManager.getCurrentMap() == PitMapManager.PitMap.CUSTOM
+                || ((isAutoHealBusy() || mc.thePlayer.isUsingItem()) && !allowsHealingMovement())) {
+            pauseGameplay();
+            return;
+        }
+        if (PitMapManager.isInSpawn(x, y, z)) {
+            handleSpawn();
+            return;
+        }
+        if (com.nezurstandalone.utils.PitMidRing.contains(x, y, z)) {
+            if (currentState == State.RETURNING_TO_MID) {
+                PathfinderManager.clear(this, true);
+                currentState = State.FIGHTING;
+            }
+            handlePit();
+            return;
+        }
+        if (spawnWalkStart != 0L) releaseSpawnWalk(true);
+        releaseCombat();
+        combat.resetTargeting();
+        if (currentState != State.RETURNING_TO_MID) {
+            PathfinderManager.clear(this, true);
+            midRepathAt = 0L;
+        }
+        navigateToMid();
+    }
 }

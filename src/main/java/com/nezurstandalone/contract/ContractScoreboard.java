@@ -109,7 +109,7 @@ public final class ContractScoreboard {
         if(s.contains("no perk") || s.contains("without perk") || s.contains("zero perk"))return ContractOffer.Type.NO_PERK_KILLS;
         if(s.contains("armor"))return ContractOffer.Type.NO_ARMOR_KILLS;
         if(s.contains("diamond sword"))return ContractOffer.Type.DIAMOND_SWORD_FINAL_BLOW;
-        if(s.contains("chain"))return ContractOffer.Type.CHAIN_KILLS;
+        if(ContractOffer.isMultikill(s) || s.matches("chain kills?:?"))return ContractOffer.Type.MULTIKILL;
         if(s.contains("bount"))return ContractOffer.Type.CLAIM_BOUNTIES;
         if(s.contains("apple"))return ContractOffer.Type.GOLDEN_APPLES;
         if(s.contains("gold") || s.contains("ingot"))return ContractOffer.Type.COLLECT_GOLD_INGOTS;

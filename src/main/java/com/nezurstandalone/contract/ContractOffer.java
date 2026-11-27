@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 public final class ContractOffer {
     public enum Type {
         KILL_PLAYERS, FIST_MID_KILLS, SNEAK_ATTACK_KILLS, NO_ARMOR_KILLS, NO_PERK_KILLS,
-        DIAMOND_SWORD_FINAL_BLOW, CHAIN_KILLS, CLAIM_BOUNTIES, COLLECT_GOLD_INGOTS,
+        DIAMOND_SWORD_FINAL_BLOW, MULTIKILL, CLAIM_BOUNTIES, COLLECT_GOLD_INGOTS,
         KILL_STREAK, GRASS_KILLS, LAVA_KILLS, OBSIDIAN_KILLS, BOW_TAG_KILLS,
         GOLDEN_APPLES, BOW_SHOTS, FISH_DIAMOND_SWORD, UNKNOWN
     }
@@ -19,17 +19,20 @@ public final class ContractOffer {
     private static final Pattern NUMBER = Pattern.compile("(\\d[\\d,]*)");
     private static final Pattern VILE = Pattern.compile("(?i)(?:bonus\\s*:\\s*)?\\+?\\s*(\\d+)\\s+chunks?\\s+of\\s+vile");
     private static final Pattern GOLD = Pattern.compile("(?i)reward\\s*:\\s*([\\d,]+)g");
-    public final int slot, itemId, metadata, required, goldReward, vileAmount;
+    private static final Pattern CHAIN_TASK = Pattern.compile("(?i)\\bchain\\s+\\d+\\s+kills?\\b");
+    private static final Pattern NAMED_MULTIKILL = Pattern.compile("(?i)\\b(?:triple|quadra|quadruple)[ -]+kills?\\b");
+    public final int slot, itemId, metadata, required, goldReward, vileAmount, timeLimitSeconds;
     public final Type type;
     public final String name, task;
     public final boolean clickable;
     public final List<String> lore;
 
     private ContractOffer(int slot, int itemId, int metadata, int required, int goldReward,
-                          int vileAmount, Type type, String name, String task, boolean clickable,
+                          int vileAmount, int timeLimitSeconds, Type type, String name, String task, boolean clickable,
                           List<String> lore) {
         this.slot=slot; this.itemId=itemId; this.metadata=metadata; this.required=required;
         this.goldReward=goldReward; this.vileAmount=vileAmount; this.type=type;
+        this.timeLimitSeconds=timeLimitSeconds;
         this.name=name; this.task=task; this.clickable=clickable;
         this.lore=Collections.unmodifiableList(new ArrayList<String>(lore));
     }
@@ -53,8 +56,8 @@ public final class ContractOffer {
         vile=vileReward(String.join(" ",clean));
         String objective=task.toString().trim();
         Matcher amount=NUMBER.matcher(objective);
-        int required=amount.find()?Integer.parseInt(amount.group(1).replace(",","")):0;
-        return new ContractOffer(slot,itemId,metadata,required,gold,vile,classify(objective),name,objective,clickable,clean);
+        int required=amount.find()?Integer.parseInt(amount.group(1).replace(",","")):hasNamedMultikill(objective)?1:0;
+        return new ContractOffer(slot,itemId,metadata,required,gold,vile,timeLimitSeconds(clean),classify(objective),name,objective,clickable,clean);
     }
 
     public static boolean shouldStartQuest(String name,String lore,boolean daily,boolean weekly) {
@@ -91,6 +94,24 @@ public final class ContractOffer {
         return reward.find()?Integer.parseInt(reward.group(1)):0;
     }
     private static String strip(String line) { return line==null?"":line.replaceAll("(?i)§[0-9a-fk-or]","").trim(); }
+    private static boolean hasNamedMultikill(String objective) {
+        return NAMED_MULTIKILL.matcher(objective).find();
+    }
+    public boolean isNamedMultikill() { return type==Type.MULTIKILL && hasNamedMultikill(task); }
+    static boolean isMultikill(String objective) {
+        return hasNamedMultikill(objective) || CHAIN_TASK.matcher(objective).find();
+    }
+    private static int timeLimitSeconds(List<String> lore) {
+        for (String line : lore) {
+            if (!line.toLowerCase(Locale.ROOT).startsWith("time limit:")) continue;
+            Matcher time = Pattern.compile("(?i)([0-9]{1,4})\\s*(minutes?|seconds?)").matcher(line);
+            int seconds = 0;
+            while(time.find()) seconds += Integer.parseInt(time.group(1)) *
+                    (time.group(2).toLowerCase(Locale.ROOT).startsWith("minute") ? 60 : 1);
+            if(seconds > 0)return seconds;
+        }
+        return Integer.MAX_VALUE;
+    }
     private static Type classify(String task) {
         String s=task.toLowerCase(Locale.ROOT);
         // Ranged/composite objectives must be identified before generic kill labels.
@@ -105,7 +126,7 @@ public final class ContractOffer {
                 && (s.contains("kill") || s.contains("blow"))) return Type.NO_PERK_KILLS;
         if(s.contains("without") && s.contains("armor")) return Type.NO_ARMOR_KILLS;
         if(s.contains("diamond sword") && (s.contains("kill")||s.contains("blow"))) return Type.DIAMOND_SWORD_FINAL_BLOW;
-        if(s.contains("chain") && s.contains("kill")) return Type.CHAIN_KILLS;
+        if(isMultikill(s)) return Type.MULTIKILL;
         if(s.contains("bount")) return Type.CLAIM_BOUNTIES;
         if(s.contains("gold ingot") || s.matches(".*\\bcollect\\s+[0-9,]+\\s+ingots?\\b.*")) return Type.COLLECT_GOLD_INGOTS;
         if(s.matches(".*\\bkill(?:s)?\\s*streak\\b.*")) return Type.KILL_STREAK;

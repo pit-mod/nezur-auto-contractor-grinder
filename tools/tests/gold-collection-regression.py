@@ -27,7 +27,7 @@ class ItemStack{Object item=net.minecraft.init.Items.gold_ingot;Object getItem()
 class EntityItem extends Entity{ItemStack stack=new ItemStack();ItemStack getEntityItem(){return stack;}}
 class EntityPlayer extends Entity{}
 class Utils{static boolean spawn;static boolean isInSpawn(){return spawn;}static String getScoreboardTitle(){return "THE HYPIXEL PIT";}}
-class PathfinderManager{enum State{COMPLETED,WORKING}static State state=State.COMPLETED;static int paths;static boolean isPathing(){return state==State.WORKING;}static State getState(){return state;}static void clear(Object o,boolean b){state=State.COMPLETED;}static void walkTo(Object o,double x,double y,double z,boolean b){paths++;state=State.WORKING;}}
+class PathfinderManager{enum State{COMPLETED,WORKING}static State state=State.COMPLETED;static int paths;static boolean available(Object owner){return true;}static boolean isNavigatingTo(Object goal){return false;}static boolean isPathing(){return state==State.WORKING;}static State getState(){return state;}static void clear(Object o,boolean b){state=State.COMPLETED;}static void walkTo(Object o,double x,double y,double z,boolean b){paths++;state=State.WORKING;}}
 class RotationUtils{static float[] getRotations(Entity e,int x,int y,int z){return new float[]{0,0};}}
 class RotationManager{static final int PRIORITY_COMBAT=1;static RotationManager getInstance(){return new RotationManager();}void setTargetRotation(Object o,int a,float b,float c,int d,boolean e){}}
 class AutoGrinder{boolean hasTemporaryPerkLease(){return false;}boolean isToggled(){return false;}}
@@ -41,7 +41,28 @@ public class GoldRegression {
  GOLD_SETTING
  EntityItem goldTarget;int lastGoldProgress=-1;GoldPickupRecovery goldPickupRecovery=new GoldPickupRecovery();Map<Integer,Long> blockedGoldTargets=new HashMap<>();
  void log(String s){}void startGrinder(){}void stopGrinder(){}void cleanupNavigation(){}void move(State s){state=s;}boolean isExecutable(ContractOffer.Type t){return true;}AutoGrinder grinder(){return null;}boolean isClassicPitTitle(String s){return false;}boolean sustainedLowPopulation(){return getMidPlayerCount()<(int)minMidPlayers.value;}int getMidPlayerCount(){return 0;}
- LIVE_GOLD
+ static class BlockPos {}
+ static class GoldHunt {
+  int visibleNet; EntityItem select(EntityItem current, double radius, long now) {
+   EntityItem best=null; visibleNet=0;
+   for(Entity e:world.loadedEntityList)if(e instanceof EntityItem && !e.isDead && player.getDistanceToEntity(e)<=radius){
+    visibleNet++;if(best==null || player.getDistanceToEntity(e)<player.getDistanceToEntity(best))best=(EntityItem)e;
+   }
+   return best;
+  }
+  World world; Player player;
+  boolean live(EntityItem item){return !item.isDead;} BlockPos stand(EntityItem e){return new BlockPos();}
+  int visible(){return visibleNet;}int viable(){return visibleNet;}
+ }
+ GoldHunt goldHunt=new GoldHunt();
+ GoldRegression(){goldHunt.world=mc.theWorld;goldHunt.player=mc.thePlayer;}
+ BlockPos goldStand, goldRepositionGoal; long goldScanAt,goldTargetSince,goldPickupSince,goldRepositionUntil;
+ int hudGoldVisible,goldTargetsSkipped;boolean goldRepositionTried;
+ final ContractStuckWatch goldMovement=new ContractStuckWatch();
+ void pauseNavigation(){com.nezurstandalone.control.MovementKeys.release("contractor-gold");}
+ void setGoldTarget(EntityItem target,long now){goldTarget=target;}
+ void approachGold(long now){com.nezurstandalone.control.MovementKeys.set("contractor-gold",1,true);}
+ void repositionForGold(long now){}
  TICK_GOLD
  LOBBY_SWAP
  void population(long now){ POPULATION }
@@ -51,7 +72,6 @@ public class GoldRegression {
  boolean swap=g.shouldLobbySwap();g.population(15000);System.out.println("EMPTY_MID grinderSwap="+swap+" contractorSwap="+(g.connection.requests>0));check(swap==!modified,"grinder population");check((g.connection.requests>0)==!modified,"contractor population");
  ContractCombatPolicy.type=ContractOffer.Type.KILL_PLAYERS;g.scoreboard.type=ContractOffer.Type.KILL_PLAYERS;g.connection.requests=0;g.thinLobbySince=1;g.population(15000);check(g.shouldLobbySwap()&&g.connection.requests==1,"ordinary population policy preserved");AutoReconnect.hold=true;check(!g.shouldLobbySwap(),"care package pauses intentional swap");AutoReconnect.hold=false;
  g=new GoldRegression();g.drop(10,48);g.tickGold(1000);System.out.println("SCAN_48 target="+(g.goldTarget!=null)+" radius="+g.goldScanRadius.value);check((g.goldTarget!=null)==modified,"long range scan");
- g=new GoldRegression();g.drop(42,1);g.tickGold(1000);g.tickGold(2201);System.out.println("STUCK_1200 forward="+com.nezurstandalone.control.MovementKeys.down(1)+" left="+com.nezurstandalone.control.MovementKeys.down(2)+" jump="+com.nezurstandalone.control.MovementKeys.down(4));check(com.nezurstandalone.control.MovementKeys.down(1)==!modified,"stop straight pushing");check(com.nezurstandalone.control.MovementKeys.down(2)==modified,"sidestep");g.tickGold(2602);g.tickGold(3803);if(modified)check(com.nezurstandalone.control.MovementKeys.down(3),"alternate recovery");g.tickGold(4204);g.tickGold(5405);System.out.println("BOUNDED_RECOVERY abandoned="+(g.goldTarget==null));check((g.goldTarget==null)==modified,"bounded retries");g.drop(43,48);g.tickGold(5410);if(modified)check(g.goldTarget.id==43,"skip blocked drop");
  g=new GoldRegression();EntityItem dead=g.drop(99,1);g.tickGold(1000);dead.isDead=true;EntityItem next=g.drop(100,30);g.tickGold(1300);check(g.goldTarget==next,"despawn retarget");check(g.scoreboard.current==2&&g.lastGoldProgress==2,"scoreboard truth");System.out.println("DESPAWN retarget=true scoreboardProgress="+g.lastGoldProgress);
  g=new GoldRegression();g.drop(3,1);g.tickGold(1000);g.mc.currentScreen=new Object();g.tickGold(2201);check(!com.nezurstandalone.control.MovementKeys.down(1)&&!com.nezurstandalone.control.MovementKeys.down(2)&&!com.nezurstandalone.control.MovementKeys.down(4),"GUI releases input");
  if(modified){GoldPickupRecovery h=new GoldPickupRecovery();check(h.update(0,1,true,true,0,0,3)==GoldPickupRecovery.Action.NONE,"start");check(h.update(1201,1,false,true,0,0,3)==GoldPickupRecovery.Action.NONE,"manual blocked reset");check(h.update(2000,1,true,false,0,0,3)==GoldPickupRecovery.Action.NONE,"airborne not stuck");h.update(3000,1,true,true,0,0,3);check(h.update(4000,1,true,true,.5,0,2.5)==GoldPickupRecovery.Action.NONE,"moving not stuck");check(h.update(4200,2,true,true,.5,0,2.5)==GoldPickupRecovery.Action.NONE,"target resets recovery");}
@@ -70,7 +90,7 @@ for mode in ['modified']:
  w=d/mode;w.mkdir(exist_ok=True)
  root=c
  auto=(root/'src/main/java/com/nezurstandalone/module/impl/player/AutoContractor.java').read_text(encoding='utf-8');eng=(root/'src/main/java/com/nezurstandalone/engine/GrinderEngine.java').read_text(encoding='utf-8')
- body=fixture.replace('GOLD_SETTING',next(x.strip() for x in auto.splitlines() if 'private final NumberSetting goldScanRadius=' in x)).replace('LIVE_GOLD',method(auto,'    private boolean liveGold(')).replace('TICK_GOLD',method(auto,'    private void tickGold(')).replace('LOBBY_SWAP',method(eng,'    private boolean shouldLobbySwap(')).replace('POPULATION',population(auto))
+ body=fixture.replace('GOLD_SETTING',next(x.strip() for x in auto.splitlines() if 'private final NumberSetting goldScanRadius=' in x)).replace('TICK_GOLD',method(auto,'    private void tickGold(')).replace('LOBBY_SWAP',method(eng,'    private boolean shouldLobbySwap(')).replace('POPULATION',population(auto))
  body=body.replace('net.minecraft.entity.item.EntityItem','EntityItem').replace('net.minecraft.entity.player.EntityPlayer','EntityPlayer');(w/'GoldRegression.java').write_text(body,encoding='utf-8')
  for rel,content in stubs.items():f=w/rel;f.parent.mkdir(parents=True,exist_ok=True);f.write_text(content)
  for name in ['GoldPickupRecovery','ContractStuckWatch']:shutil.copy2(c/('src/main/java/com/nezurstandalone/contract/'+name+'.java'),w/('com/nezurstandalone/contract/'+name+'.java'))

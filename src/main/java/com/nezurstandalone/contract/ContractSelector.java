@@ -3,17 +3,18 @@ package com.nezurstandalone.contract;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 
-/** Vile is filtered before objective priority. Unknown offers may only be accepted for an idle refresh, never executed. */
+/** Vile is filtered before objective priority. An optional fallback is held until expiry. */
 public final class ContractSelector {
     public static final List<ContractOffer.Type> DEFAULT_PRIORITY = Collections.unmodifiableList(Arrays.asList(
             ContractOffer.Type.GOLDEN_APPLES, ContractOffer.Type.KILL_PLAYERS, ContractOffer.Type.FIST_MID_KILLS,
             ContractOffer.Type.SNEAK_ATTACK_KILLS, ContractOffer.Type.NO_ARMOR_KILLS,
-            ContractOffer.Type.NO_PERK_KILLS,
-            ContractOffer.Type.DIAMOND_SWORD_FINAL_BLOW, ContractOffer.Type.CHAIN_KILLS,
-            ContractOffer.Type.CLAIM_BOUNTIES, ContractOffer.Type.COLLECT_GOLD_INGOTS));
+            ContractOffer.Type.DIAMOND_SWORD_FINAL_BLOW, ContractOffer.Type.CLAIM_BOUNTIES,
+            ContractOffer.Type.COLLECT_GOLD_INGOTS, ContractOffer.Type.NO_PERK_KILLS,
+            ContractOffer.Type.KILL_STREAK, ContractOffer.Type.MULTIKILL));
 
     public enum Mode { PREFERRED, FALLBACK, NONE }
     public static final class Choice {
@@ -30,6 +31,7 @@ public final class ContractSelector {
         int bestRank=Integer.MAX_VALUE;
         for(ContractOffer offer:offers) {
             if(offer==null || offer.vileAmount<=0 || !offer.clickable || offer.type==ContractOffer.Type.UNKNOWN) continue;
+            if(offer.type==ContractOffer.Type.MULTIKILL && !offer.isNamedMultikill())continue;
             int rank=priority.indexOf(offer.type);
             if(rank>=0 && executable.contains(offer.type)) {
                 if(rank<bestRank) {best=offer;bestRank=rank;}
@@ -39,8 +41,13 @@ public final class ContractSelector {
         if(allowFallback) {
             List<ContractOffer> fallback=new ArrayList<ContractOffer>();
             for(ContractOffer offer:offers)
-                if(offer!=null && offer.clickable && offer.vileAmount>0)fallback.add(offer);
-            if(!fallback.isEmpty())return new Choice(Mode.FALLBACK,fallback.get(random.nextInt(fallback.size())));
+                if(offer!=null && offer.clickable && offer.vileAmount>0
+                        && offer.type!=ContractOffer.Type.MULTIKILL)fallback.add(offer);
+            fallback.sort(Comparator.comparingInt((ContractOffer offer)->offer.timeLimitSeconds)
+                    .thenComparing(Comparator.comparingInt((ContractOffer offer)->offer.vileAmount).reversed())
+                    .thenComparing(Comparator.comparingInt((ContractOffer offer)->offer.goldReward).reversed())
+                    .thenComparingInt(offer->offer.slot));
+            if(!fallback.isEmpty())return new Choice(Mode.FALLBACK,fallback.get(0));
         }
         return new Choice(Mode.NONE,null);
     }

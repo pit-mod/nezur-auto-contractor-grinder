@@ -13,7 +13,7 @@ public final class StableOfferGate {
         for(int i=1;i<=3;i++) {
             ContractOffer found=null;
             for(ContractOffer offer:offers) if(offer!=null && ("Choice #"+i).equalsIgnoreCase(offer.name.trim())) found=offer;
-            if(found==null || !found.clickable || found.itemId!=403) {reset();return false;}
+            if(found==null || !found.clickable || found.itemId!=403 || found.task.isEmpty()) {reset();return false;}
             next.append(found.slot).append('|').append(found.itemId).append('|').append(found.metadata)
                 .append('|').append(found.task).append('|').append(found.goldReward).append('|')
                 .append(found.vileAmount).append('|').append(found.lore).append(';');
